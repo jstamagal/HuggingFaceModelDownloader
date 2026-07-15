@@ -10,6 +10,7 @@ Complete command-line reference for `hfdownloader`.
 - [Quick Reference](#quick-reference)
 - [Global Flags](#global-flags)
 - [Commands](#commands)
+  - [search](#search)
   - [download](#download)
   - [serve](#serve)
   - [analyze](#analyze)
@@ -55,6 +56,9 @@ hfdownloader download facebook/flores --dataset
 # Analyze before downloading
 hfdownloader analyze owner/model
 
+# Search and browse models interactively
+hfdownloader search llama
+
 # Start web UI
 hfdownloader serve
 
@@ -95,6 +99,47 @@ hfdownloader download meta-llama/Llama-2-7b
 ---
 
 ## Commands
+
+### search
+
+Search, filter, and browse model repositories on the Hugging Face Hub in a
+full-screen TUI. Selecting a result analyzes the repository, then opens the
+smart download selector when variants or components are available.
+
+```text
+hfdownloader search [query] [flags]
+```
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--author` | string | | Filter by author or organization |
+| `--pipeline` | string | | Filter by pipeline task |
+| `--library` | string | | Filter by library |
+| `--gated` | string | `all` | Access filter: `all`, `open`, or `gated` |
+| `--sort` | string | `trending` | `trending`, `downloads`, `likes`, `updated`, or `created` |
+| `--limit` | int | `50` | Maximum results per search (1-1000) |
+| `--endpoint` | string | `https://huggingface.co` | Custom Hub endpoint |
+
+TUI keys:
+
+| Key | Action |
+|-----|--------|
+| `/` | Focus the search field |
+| `Up` / `Down`, `j` / `k` | Move through results |
+| `s` / `t` / `l` / `g` | Cycle sort, task, library, and access filters |
+| `c` | Copy the interactive analyze command |
+| `Enter` | Inspect the selected model |
+| `q` | Quit |
+
+Use the global `--json` flag to return search results without starting the TUI.
+
+```bash
+hfdownloader search
+hfdownloader search llama
+hfdownloader search mistral --library transformers --sort downloads
+hfdownloader search --pipeline text-to-image --gated open
+hfdownloader search llama --json
+```
 
 ### download
 

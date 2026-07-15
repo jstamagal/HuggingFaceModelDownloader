@@ -36,6 +36,8 @@ type BranchPickerModel struct {
 	allItems []refItem
 
 	cursor int
+	width  int
+	height int
 	result BranchPickerResult
 	done   bool
 }
@@ -83,6 +85,9 @@ func (m *BranchPickerModel) Init() tea.Cmd {
 // Update implements tea.Model.
 func (m *BranchPickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		m.width, m.height = msg.Width, msg.Height
+
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "ctrl+c", "q", "esc":
@@ -117,40 +122,66 @@ func (m *BranchPickerModel) View() string {
 	if m.done {
 		return ""
 	}
-
-	var b strings.Builder
-
-	// Header
-	title := TitleStyle.Render("Select Branch/Tag")
-	subtitle := SubtitleStyle.Render(m.repo)
-	b.WriteString(title + "\n")
-	b.WriteString(subtitle + "\n\n")
-
-	b.WriteString(SubtitleStyle.Render("This repository has multiple versions. Select which one to analyze:") + "\n\n")
-
-	// Branches section
-	if len(m.branches) > 0 {
-		b.WriteString(CategoryStyle.Render("Branches") + "\n\n")
-		for _, item := range m.branches {
-			b.WriteString(m.renderRefItem(item))
-		}
-		b.WriteString("\n")
+	w, h := m.width, m.height
+	if w <= 0 {
+		w = 80
 	}
-
-	// Tags section
-	if len(m.tags) > 0 {
-		b.WriteString(CategoryStyle.Render("Tags") + "\n\n")
-		for _, item := range m.tags {
-			b.WriteString(m.renderRefItem(item))
-		}
-		b.WriteString("\n")
+	if h <= 0 {
+		h = 24
 	}
+	title := fillStyledLine(TitleStyle.Copy().Margin(0).Render("Select Branch/Tag"), w, SearchBackgroundStyle)
+	subtitle := fillStyledLine(SubtitleStyle.Render(m.repo), w, SearchBackgroundStyle)
+	hint := fillStyledLine(SubtitleStyle.Render("This repository has multiple versions. Select one to analyze."), w, SearchBackgroundStyle)
+	separator := SearchHeavySeparatorStyle.Render(strings.Repeat("═", w))
+	list := m.renderRefViewport(w, searchMax(1, h-5))
+	footer := fillStyledLine(m.renderFooter(), w, SearchBottomBarStyle)
+	return fitScreen(strings.Join([]string{title, subtitle, hint, separator, list, footer}, "\n"), w, h, SearchScreenStyle)
+}
 
-	// Footer
-	footer := m.renderFooter()
-	b.WriteString(footer)
+func (m *BranchPickerModel) renderRefViewport(width, height int) string {
+	type row struct {
+		text  string
+		index int
+	}
+	rows := make([]row, 0, len(m.allItems)+4)
+	addSection := func(title string, items []refItem) {
+		if len(items) == 0 {
+			return
+		}
+		if len(rows) > 0 {
+			rows = append(rows, row{index: -1})
+		}
+		rows = append(rows, row{text: CategoryStyle.Copy().Margin(0).Render(title), index: -1})
+		for _, item := range items {
+			rows = append(rows, row{text: m.renderRefItem(item), index: item.Index})
+		}
+	}
+	addSection("Branches", m.branches)
+	addSection("Tags", m.tags)
 
-	return b.String()
+	cursorRow := 0
+	for i := range rows {
+		if rows[i].index == m.cursor {
+			cursorRow = i
+			break
+		}
+	}
+	start := cursorRow - height/2
+	if start < 0 {
+		start = 0
+	}
+	if start+height > len(rows) {
+		start = searchMax(0, len(rows)-height)
+	}
+	end := searchMin(len(rows), start+height)
+	visible := make([]string, 0, height)
+	for _, row := range rows[start:end] {
+		visible = append(visible, fillStyledLine(row.text, width, SearchBackgroundStyle))
+	}
+	for len(visible) < height {
+		visible = append(visible, fillStyledLine("", width, SearchBackgroundStyle))
+	}
+	return strings.Join(visible, "\n")
 }
 
 // renderRefItem renders a single ref item.
@@ -178,9 +209,9 @@ func (m *BranchPickerModel) renderRefItem(item refItem) string {
 	// Highlight current selection
 	var line string
 	if m.cursor == item.Index {
-		line = fmt.Sprintf("%s%s%s\n", cursor, icon, SelectedItemStyle.Render(name))
+		line = fmt.Sprintf("%s%s%s", cursor, icon, SelectedItemStyle.Render(name))
 	} else {
-		line = fmt.Sprintf("%s%s%s\n", cursor, icon, ItemStyle.Render(name))
+		line = fmt.Sprintf("%s%s%s", cursor, icon, ItemStyle.Render(name))
 	}
 
 	return line
@@ -202,7 +233,7 @@ func (m *BranchPickerModel) renderFooter() string {
 		parts = append(parts, HelpKeyStyle.Render(k.key)+" "+HelpStyle.Render(k.desc))
 	}
 
-	return FooterStyle.Render(strings.Join(parts, " • "))
+	return FooterStyle.Copy().Margin(0).Render(strings.Join(parts, " • "))
 }
 
 // Result returns the selection result.

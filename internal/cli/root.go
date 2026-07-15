@@ -67,6 +67,7 @@ func Execute(version string) error {
 	root.AddCommand(newInfoCmd(ro))
 	root.AddCommand(newMirrorCmd(ro))
 	root.AddCommand(newAnalyzeCmd(ctx, ro))
+	root.AddCommand(newSearchCmd(ctx, ro))
 	root.AddCommand(newProxyCmd(ro))
 
 	// Use download as the default action, but on a bare invocation with no
@@ -552,4 +553,3 @@ func jsonProgress(w io.Writer) hfdownloader.ProgressFunc {
 		mu.Unlock()
 	}
 }
-

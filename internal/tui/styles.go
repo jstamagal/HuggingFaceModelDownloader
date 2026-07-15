@@ -9,6 +9,10 @@ import (
 
 // Color palette
 var (
+	ColorBackground = lipgloss.Color("0")
+	ColorBar        = lipgloss.Color("4")
+	ColorBarText    = lipgloss.Color("15")
+
 	ColorPrimary   = lipgloss.Color("86")  // Cyan
 	ColorSecondary = lipgloss.Color("99")  // Purple
 	ColorSuccess   = lipgloss.Color("82")  // Green
@@ -149,6 +153,49 @@ var (
 	SuccessStyle = lipgloss.NewStyle().
 			Foreground(ColorSuccess).
 			Bold(true)
+
+	// Search browser styles. The bars borrow BitchX's ANSI-blue chrome while
+	// the focused panels and selection treatment follow the compact OMP picker.
+	SearchScreenStyle = lipgloss.NewStyle().
+				Foreground(ColorBarText).
+				Background(ColorBackground)
+
+	SearchBackgroundStyle = lipgloss.NewStyle().
+				Foreground(ColorBarText).
+				Background(ColorBackground)
+
+	SearchTopBarStyle = lipgloss.NewStyle().
+				Bold(true).
+				Foreground(ColorBarText).
+				Background(ColorBar)
+
+	SearchBottomBarStyle = lipgloss.NewStyle().
+				Foreground(ColorBarText).
+				Background(lipgloss.Color("236"))
+
+	SearchHeavySeparatorStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("12"))
+	SearchPanelStyle          = lipgloss.NewStyle().
+					Border(lipgloss.RoundedBorder()).
+					BorderForeground(ColorBorder).
+					Padding(0, 1).
+					Background(ColorBackground)
+	SearchFocusedPanelStyle = SearchPanelStyle.BorderForeground(ColorBorderFocus)
+	SearchPanelTitleStyle   = lipgloss.NewStyle().Bold(true).Foreground(ColorSecondary)
+	SearchSelectedStyle     = lipgloss.NewStyle().
+				Bold(true).
+				Foreground(lipgloss.Color("0")).
+				Background(ColorPrimary)
+	SearchResultIDStyle    = lipgloss.NewStyle().Foreground(ColorBarText)
+	SearchMutedStyle       = lipgloss.NewStyle().Foreground(ColorMuted)
+	SearchAccentStyle      = lipgloss.NewStyle().Bold(true).Foreground(ColorPrimary)
+	SearchInputPromptStyle = lipgloss.NewStyle().Bold(true).Foreground(ColorSecondary)
+	SearchInputTextStyle   = lipgloss.NewStyle().Foreground(ColorHighlight)
+	SearchFilterKeyStyle   = lipgloss.NewStyle().Bold(true).Foreground(ColorSecondary)
+	SearchFilterValueStyle = lipgloss.NewStyle().Foreground(ColorPrimary)
+	SearchDetailLabelStyle = lipgloss.NewStyle().Foreground(ColorMuted)
+	SearchDetailValueStyle = lipgloss.NewStyle().Foreground(ColorBarText)
+	SearchHelpKeyStyle     = lipgloss.NewStyle().Bold(true).Foreground(ColorPrimary)
+	SearchErrorStyle       = lipgloss.NewStyle().Bold(true).Foreground(ColorError)
 )
 
 // RenderStars renders quality stars (filled and empty).

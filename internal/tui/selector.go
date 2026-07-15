@@ -9,6 +9,8 @@ import (
 
 	"github.com/atotto/clipboard"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/bodaay/HuggingFaceModelDownloader/pkg/smartdl"
 )
@@ -27,16 +29,14 @@ type SelectorResult struct {
 
 // categoryGroup groups items by category for display.
 type categoryGroup struct {
-	Name  string
-	Title string
-	Items []itemState
+	Title       string
+	ItemIndexes []int
 }
 
 // itemState tracks the selection state of an item.
 type itemState struct {
 	Item     smartdl.SelectableItem
 	Selected bool
-	Index    int // Global index for cursor tracking
 }
 
 // SelectorModel is the bubbletea model for interactive selection.
@@ -68,6 +68,7 @@ func NewSelectorModel(info *smartdl.RepoInfo) *SelectorModel {
 	m := &SelectorModel{
 		repoInfo: info,
 	}
+	foundRecommended := false
 
 	// Group items by category
 	categoryMap := make(map[string][]smartdl.SelectableItem)
@@ -89,7 +90,6 @@ func NewSelectorModel(info *smartdl.RepoInfo) *SelectorModel {
 	for _, catName := range categoryOrder {
 		items := categoryMap[catName]
 		group := categoryGroup{
-			Name:  catName,
 			Title: FormatCategoryTitle(catName),
 		}
 
@@ -97,10 +97,13 @@ func NewSelectorModel(info *smartdl.RepoInfo) *SelectorModel {
 			state := itemState{
 				Item:     item,
 				Selected: item.Recommended, // Pre-select recommended items
-				Index:    globalIdx,
 			}
-			group.Items = append(group.Items, state)
+			group.ItemIndexes = append(group.ItemIndexes, globalIdx)
 			m.allItems = append(m.allItems, state)
+			if item.Recommended && !foundRecommended {
+				m.cursor = globalIdx
+				foundRecommended = true
+			}
 			globalIdx++
 		}
 
@@ -180,123 +183,122 @@ func (m *SelectorModel) View() string {
 	if m.done {
 		return ""
 	}
-
-	var b strings.Builder
-
-	// Header
-	title := TitleStyle.Render(m.repoInfo.Repo)
-	typeInfo := HeaderInfoStyle.Render(fmt.Sprintf("Type: %s (%s)", m.repoInfo.Type, m.repoInfo.TypeDescription))
-	statsInfo := SubtitleStyle.Render(fmt.Sprintf("%d files • %s total", m.repoInfo.FileCount, m.repoInfo.TotalSizeHuman))
-
-	b.WriteString(title + "\n")
-	b.WriteString(typeInfo + "\n")
-	b.WriteString(statsInfo + "\n\n")
-
-	// Items by category
-	for _, cat := range m.categories {
-		b.WriteString(CategoryStyle.Render(cat.Title) + "\n\n")
-
-		for i, state := range cat.Items {
-			// Find actual index in allItems
-			actualIdx := 0
-			for j, all := range m.allItems {
-				if all.Index == state.Index {
-					actualIdx = j
-					break
-				}
-			}
-
-			// Update state from allItems (which has the actual selection state)
-			state = m.allItems[actualIdx]
-
-			// Cursor indicator
-			cursor := "  "
-			if m.cursor == actualIdx {
-				cursor = CursorStyle.Render("> ")
-			}
-
-			// Checkbox
-			checkbox := RenderCheckbox(state.Selected)
-
-			// Label
-			label := state.Item.Label
-			if state.Item.Recommended {
-				label = label + " " + RecommendedBadge.String()
-			}
-
-			// Size
-			sizeStr := ""
-			if state.Item.SizeHuman != "" {
-				sizeStr = SizeLabelStyle.Render(state.Item.SizeHuman)
-			}
-
-			// Quality stars
-			stars := ""
-			if state.Item.Quality > 0 {
-				stars = " " + RenderStars(state.Item.Quality)
-			}
-
-			// RAM estimate (for GGUF)
-			ramStr := ""
-			if state.Item.RAMHuman != "" {
-				ramStr = RAMLabelStyle.Render("~" + state.Item.RAMHuman + " RAM")
-			}
-
-			// Build the line
-			line := fmt.Sprintf("%s%s %s  %s%s  %s",
-				cursor, checkbox, label, sizeStr, stars, ramStr)
-
-			// Highlight current line
-			if m.cursor == actualIdx {
-				line = SelectedItemStyle.Render(line)
-			} else {
-				line = ItemStyle.Render(line)
-			}
-
-			b.WriteString(line + "\n")
-
-			// Description on next line (indented)
-			if state.Item.Description != "" && (m.cursor == actualIdx || i == 0) {
-				desc := DescriptionStyle.Render("    " + state.Item.Description)
-				b.WriteString(desc + "\n")
-			}
-		}
-		b.WriteString("\n")
+	w, h := m.width, m.height
+	if w <= 0 {
+		w = 80
+	}
+	if h <= 0 {
+		h = 30
 	}
 
-	// Summary
+	title := fillStyledLine(TitleStyle.Copy().Margin(0).Render(m.repoInfo.Repo), w, SearchBackgroundStyle)
+	typeInfo := fillStyledLine(HeaderInfoStyle.Render(fmt.Sprintf("Type: %s (%s)", m.repoInfo.Type, m.repoInfo.TypeDescription)), w, SearchBackgroundStyle)
+	statsInfo := fillStyledLine(SubtitleStyle.Render(fmt.Sprintf("%d files • %s total", m.repoInfo.FileCount, m.repoInfo.TotalSizeHuman)), w, SearchBackgroundStyle)
+	separator := SearchHeavySeparatorStyle.Render(strings.Repeat("═", w))
+
+	// Four header rows plus summary, three-row command box, and one footer.
+	viewportHeight := searchMax(1, h-9)
+	items := m.renderItemViewport(w, viewportHeight)
+
 	selectedCount, totalSize := m.getSelectionStats()
 	summaryLine := SummaryLabelStyle.Render("Selected: ") +
 		SummaryValueStyle.Render(fmt.Sprintf("%d items", selectedCount)) +
 		SummaryLabelStyle.Render(" • ") +
 		SummaryValueStyle.Render(humanSize(totalSize))
-	b.WriteString(summaryLine + "\n")
+	summaryLine = fillStyledLine(summaryLine, w, SearchBackgroundStyle)
+	command := m.renderCommandBox(w)
+	footer := fillStyledLine(m.renderFooter(w), w, SearchBottomBarStyle)
 
-	// Command preview
-	cmd := m.generateCommand()
-	cmdBox := CommandLabelStyle.Render("Command: ") + CommandTextStyle.Render(cmd)
-	b.WriteString(CommandBoxStyle.Render(cmdBox) + "\n")
+	content := strings.Join([]string{title, typeInfo, statsInfo, separator, items, summaryLine, command, footer}, "\n")
+	return fitScreen(content, w, h, SearchScreenStyle)
+}
 
-	// Footer with keybindings
-	footer := m.renderFooter()
-	b.WriteString(footer)
+type selectorRow struct {
+	text string
+}
 
-	return b.String()
+func (m *SelectorModel) renderItemViewport(width, height int) string {
+	rows := make([]selectorRow, 0, len(m.allItems)+len(m.categories)*2)
+	cursorRow := 0
+	for categoryIndex, category := range m.categories {
+		if categoryIndex > 0 {
+			rows = append(rows, selectorRow{text: ""})
+		}
+		rows = append(rows, selectorRow{
+			text: CategoryStyle.Copy().Margin(0).Render(category.Title),
+		})
+		for _, itemIndex := range category.ItemIndexes {
+			if itemIndex == m.cursor {
+				cursorRow = len(rows)
+			}
+			rows = append(rows, selectorRow{text: m.renderItem(itemIndex, width)})
+			item := m.allItems[itemIndex].Item
+			if itemIndex == m.cursor && item.Description != "" {
+				rows = append(rows, selectorRow{
+					text: DescriptionStyle.Render("    " + item.Description),
+				})
+			}
+		}
+	}
+
+	start := cursorRow - height/2
+	if start < 0 {
+		start = 0
+	}
+	if start+height > len(rows) {
+		start = searchMax(0, len(rows)-height)
+	}
+	end := searchMin(len(rows), start+height)
+	visible := make([]string, 0, height)
+	for _, row := range rows[start:end] {
+		visible = append(visible, fillStyledLine(row.text, width, SearchBackgroundStyle))
+	}
+	for len(visible) < height {
+		visible = append(visible, fillStyledLine("", width, SearchBackgroundStyle))
+	}
+	return strings.Join(visible, "\n")
+}
+
+func (m *SelectorModel) renderItem(index, width int) string {
+	state := m.allItems[index]
+	label := state.Item.Label
+	if state.Item.Recommended {
+		label += "  recommended"
+	}
+	parts := []string{RenderCheckbox(state.Selected), label}
+	if state.Item.SizeHuman != "" {
+		parts = append(parts, state.Item.SizeHuman)
+	}
+	if state.Item.Quality > 0 {
+		parts = append(parts, RenderStars(state.Item.Quality))
+	}
+	if state.Item.RAMHuman != "" {
+		parts = append(parts, "~"+state.Item.RAMHuman+" RAM")
+	}
+	line := strings.Join(parts, "  ")
+	if index == m.cursor {
+		line = "> " + line
+		line = ansi.Truncate(line, width, "…")
+		return SearchSelectedStyle.Width(width).Render(line)
+	}
+	return ItemStyle.Copy().PaddingLeft(2).Render(line)
+}
+
+func (m *SelectorModel) renderCommandBox(width int) string {
+	style := CommandBoxStyle.Copy().Margin(0)
+	borderWidth := style.GetBorderLeftSize() + style.GetBorderRightSize()
+	styleWidth := searchMax(1, width-borderWidth)
+	contentWidth := searchMax(1, styleWidth-style.GetHorizontalPadding())
+	label := CommandLabelStyle.Render("Command: ")
+	commandWidth := searchMax(1, contentWidth-lipgloss.Width(label))
+	command := CommandTextStyle.Render(ansi.Truncate(m.generateCommand(), commandWidth, "…"))
+	return style.Width(styleWidth).Height(1).Render(label + command)
 }
 
 // toggleCurrent toggles the selection of the current item.
 func (m *SelectorModel) toggleCurrent() {
 	if m.cursor >= 0 && m.cursor < len(m.allItems) {
 		m.allItems[m.cursor].Selected = !m.allItems[m.cursor].Selected
-
-		// Update category groups as well
-		for i := range m.categories {
-			for j := range m.categories[i].Items {
-				if m.categories[i].Items[j].Index == m.allItems[m.cursor].Index {
-					m.categories[i].Items[j].Selected = m.allItems[m.cursor].Selected
-				}
-			}
-		}
 	}
 }
 
@@ -304,11 +306,6 @@ func (m *SelectorModel) toggleCurrent() {
 func (m *SelectorModel) selectAll(selected bool) {
 	for i := range m.allItems {
 		m.allItems[i].Selected = selected
-	}
-	for i := range m.categories {
-		for j := range m.categories[i].Items {
-			m.categories[i].Items[j].Selected = selected
-		}
 	}
 }
 
@@ -341,7 +338,7 @@ func (m *SelectorModel) generateCommand() string {
 }
 
 // renderFooter renders the keybinding help footer.
-func (m *SelectorModel) renderFooter() string {
+func (m *SelectorModel) renderFooter(width int) string {
 	keys := []struct {
 		key  string
 		desc string
@@ -354,13 +351,26 @@ func (m *SelectorModel) renderFooter() string {
 		{"c", "copy cmd"},
 		{"q", "quit"},
 	}
+	if width < 96 {
+		keys = []struct {
+			key  string
+			desc string
+		}{
+			{"↑↓", "move"},
+			{"space", "toggle"},
+			{"a/n", "all/none"},
+			{"enter", "download"},
+			{"c", "copy"},
+			{"q", "quit"},
+		}
+	}
 
 	var parts []string
 	for _, k := range keys {
 		parts = append(parts, HelpKeyStyle.Render(k.key)+" "+HelpStyle.Render(k.desc))
 	}
 
-	return FooterStyle.Render(strings.Join(parts, " • "))
+	return FooterStyle.Copy().Margin(0).Render(strings.Join(parts, " • "))
 }
 
 // Result returns the selection result (call after tea.Program ends).

@@ -88,6 +88,9 @@ func TestQuantPattern(t *testing.T) {
 		// Standard quantizations
 		{"model.Q4_K_M.gguf", "Q4_K_M"},
 		{"mistral-7b.Q4_0.gguf", "Q4_0"},
+		{"mistral-7b.Q4_0_4_4.gguf", "Q4_0_4_4"},
+		{"mistral-7b.Q4_0_4_8.gguf", "Q4_0_4_8"},
+		{"mistral-7b.Q4_0_8_8.gguf", "Q4_0_8_8"},
 		{"llama-Q5_K_S.gguf", "Q5_K_S"},
 		{"model.Q8_0.gguf", "Q8_0"},
 		{"test-Q6_K.gguf", "Q6_K"},
@@ -311,6 +314,20 @@ func TestParseGGUFQuantization(t *testing.T) {
 		}
 	})
 
+	t.Run("optimized interleaved quantization", func(t *testing.T) {
+		file := FileInfo{Name: "model-Q4_0_4_8.gguf", Size: 4_000_000_000}
+		quant := parseGGUFQuantization(file)
+		if quant.Name != "Q4_0_4_8" {
+			t.Fatalf("Name = %q", quant.Name)
+		}
+		if quant.Quality != quantQuality["Q4_0"] {
+			t.Errorf("Quality = %d, want base Q4_0 quality", quant.Quality)
+		}
+		if !strings.Contains(quant.Description, "optimized 4_8 layout") {
+			t.Errorf("Description = %q", quant.Description)
+		}
+	})
+
 	t.Run("importance matrix quantization", func(t *testing.T) {
 		file := FileInfo{Name: "model.IQ2_XS.gguf", Path: "model.IQ2_XS.gguf", Size: 1000000000}
 		quant := parseGGUFQuantization(file)
@@ -348,10 +365,34 @@ func TestParseGGUFQuantization(t *testing.T) {
 	})
 }
 
+func TestOptimizedGGUFLayoutsRemainDistinct(t *testing.T) {
+	files := []FileInfo{
+		{Name: "model-Q4_0_4_4.gguf", Path: "model-Q4_0_4_4.gguf", Size: 4_000_000_000, SizeHuman: "3.7 GiB"},
+		{Name: "model-Q4_0_4_8.gguf", Path: "model-Q4_0_4_8.gguf", Size: 4_000_000_001, SizeHuman: "3.7 GiB"},
+		{Name: "model-Q4_0_8_8.gguf", Path: "model-Q4_0_8_8.gguf", Size: 4_000_000_002, SizeHuman: "3.7 GiB"},
+	}
+	items := GGUFToSelectableItems(analyzeGGUF(files))
+	if len(items) != 3 {
+		t.Fatalf("items = %d, want 3", len(items))
+	}
+	seen := map[string]bool{}
+	for _, item := range items {
+		seen[item.Label] = true
+		if item.FilterValue != strings.ToLower(item.Label) {
+			t.Errorf("%s filter = %q", item.Label, item.FilterValue)
+		}
+	}
+	for _, label := range []string{"Q4_0_4_4", "Q4_0_4_8", "Q4_0_8_8"} {
+		if !seen[label] {
+			t.Errorf("missing %s; got %#v", label, seen)
+		}
+	}
+}
+
 func TestRecommendGGUF(t *testing.T) {
 	info := &GGUFInfo{
 		Quantizations: []GGUFQuantization{
-			{Name: "Q8_0", Quality: 5, EstimatedRAM: 10 * 1024 * 1024 * 1024}, // 10GB
+			{Name: "Q8_0", Quality: 5, EstimatedRAM: 10 * 1024 * 1024 * 1024},  // 10GB
 			{Name: "Q5_K_M", Quality: 5, EstimatedRAM: 6 * 1024 * 1024 * 1024}, // 6GB
 			{Name: "Q4_K_M", Quality: 4, EstimatedRAM: 5 * 1024 * 1024 * 1024}, // 5GB
 			{Name: "Q2_K", Quality: 1, EstimatedRAM: 2 * 1024 * 1024 * 1024},   // 2GB

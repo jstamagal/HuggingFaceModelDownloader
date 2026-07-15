@@ -58,6 +58,18 @@ hfdownloader analyze -i TheBloke/Mistral-7B-Instruct-v0.2-GGUF
 
 **Without `-i`**, output is text/JSON — perfect for scripts and piping to other tools.
 
+### Search the Hub from Your Terminal
+
+Browse Hugging Face models without leaving the terminal. The full-screen model
+explorer supports live search plus task, library, access, and sort filters. Press
+Enter on a model to analyze it and continue into the smart download picker.
+
+```bash
+hfdownloader search
+hfdownloader search llama
+hfdownloader search mistral --library transformers --sort downloads
+```
+
 ### Python Just Works
 
 Downloads go to the standard HuggingFace cache. Python libraries find them automatically:
@@ -521,6 +533,7 @@ endpoint: https://hf-mirror.com
 | Command | Description |
 |---------|-------------|
 | `download` | Download models or datasets (default command) |
+| `search` | Search, filter, and browse Hugging Face models in a TUI |
 | `analyze` | Analyze repository before downloading |
 | `serve` | Start web server with REST API |
 | `list` | List all downloaded repos |

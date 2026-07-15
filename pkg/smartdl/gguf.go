@@ -132,14 +132,15 @@ var quantDescriptions = map[string]string{
 // quantPattern captures the full quantization type from a filename segment.
 // Supports:
 //   - IQ1..IQ4 importance-matrix quants with XXS/XS/S/M/NL suffixes
-//   - Q2..Q8 with legacy _0/_1 suffixes, plain _K, or _K with
+//   - Q2..Q8 with legacy _0/_1 suffixes (including interleaved ARM layouts
+//     such as Q4_0_4_4), plain _K, or _K with
 //     S/M/L/XL/XXL suffixes (XL/XXL are unsloth "Unsloth Dynamic" quants)
 //   - F16/F32/BF16 float precisions
 //
 // Alternation order inside the _K suffix group puts longer literals first
 // (XXL before XL before L) so the longest applicable suffix is always captured.
 var (
-	quantPattern = regexp.MustCompile(`(?i)(IQ[1-4]_(?:XXS|XS|S|M|NL)|Q[2-8]_(?:[01]|K(?:_(?:XXL|XL|L|M|S))?)|F(?:16|32)|BF16)`)
+	quantPattern = regexp.MustCompile(`(?i)(IQ[1-4]_(?:XXS|XS|S|M|NL)|Q[2-8]_(?:[01](?:_(?:4_4|4_8|8_8))?|K(?:_(?:XXL|XL|L|M|S))?)|F(?:16|32)|BF16)`)
 
 	// Match parameter count: 7B, 13B, 70B, 1.5B, etc.
 	paramPattern = regexp.MustCompile(`(?i)(\d+(?:\.\d+)?)[Bb]`)
@@ -226,37 +227,51 @@ func parseGGUFQuantization(f FileInfo) *GGUFQuantization {
 		// No recognized quantization, might be a split file or unknown format
 		ram := estimateRAM(f.Size)
 		return &GGUFQuantization{
-			Name:             "Unknown",
-			File:             f,
-			Quality:          3,
-			QualityStars:     qualityToStars(3),
-			EstimatedRAM:     ram,
+			Name:              "Unknown",
+			File:              f,
+			Quality:           3,
+			QualityStars:      qualityToStars(3),
+			EstimatedRAM:      ram,
 			EstimatedRAMHuman: humanSize(ram),
-			Description:      "Unknown quantization format",
+			Description:       "Unknown quantization format",
 		}
 	}
 
 	quantType := strings.ToUpper(matches[1])
-	quality := quantQuality[quantType]
+	baseType := baseQuantType(quantType)
+	quality := quantQuality[baseType]
 	if quality == 0 {
 		quality = 3 // Default to medium if not found
 	}
 
-	desc := quantDescriptions[quantType]
+	desc := quantDescriptions[baseType]
 	if desc == "" {
 		desc = "Quantized model"
+	}
+	if baseType != quantType {
+		layout := strings.TrimPrefix(quantType, baseType+"_")
+		desc += ", optimized " + layout + " layout"
 	}
 
 	ram := estimateRAM(f.Size)
 	return &GGUFQuantization{
-		Name:             quantType,
-		File:             f,
-		Quality:          quality,
-		QualityStars:     qualityToStars(quality),
-		EstimatedRAM:     ram,
+		Name:              quantType,
+		File:              f,
+		Quality:           quality,
+		QualityStars:      qualityToStars(quality),
+		EstimatedRAM:      ram,
 		EstimatedRAMHuman: humanSize(ram),
-		Description:      desc,
+		Description:       desc,
 	}
+}
+
+func baseQuantType(quantType string) string {
+	for _, suffix := range []string{"_4_4", "_4_8", "_8_8"} {
+		if strings.HasSuffix(quantType, suffix) {
+			return strings.TrimSuffix(quantType, suffix)
+		}
+	}
+	return quantType
 }
 
 // qualityToStars converts a 1-5 quality rating to star representation.
