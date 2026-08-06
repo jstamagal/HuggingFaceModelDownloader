@@ -192,6 +192,25 @@ hfdownloader download TheBloke/Mistral-7B-Instruct-v0.2-GGUF:q4_k_m,q5_k_m
 hfdownloader download TheBloke/Mistral-7B-Instruct-v0.2-GGUF -F q4_k_m -E ".md,fp16"
 ```
 
+### hf:// URIs and Hub URLs
+
+Every place that takes a repo also accepts hf:// URIs and full
+huggingface.co URLs — paste a link straight from the Hub:
+
+```bash
+# Whole repo
+hfdownloader download hf://TheBloke/Mistral-7B-Instruct-v0.2-GGUF
+hfdownloader download https://huggingface.co/meta-llama/Llama-3.1-8B-Instruct
+
+# A single file (blob/resolve links work too)
+hfdownloader download "https://huggingface.co/bartowski/Meta-Llama-3.1-8B-Instruct-GGUF/resolve/main/Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf"
+hfdownloader download hf://owner/repo/config.json
+
+# Datasets and branches
+hfdownloader download hf://datasets/HuggingFaceFW/fineweb
+hfdownloader download https://huggingface.co/owner/repo/tree/dev
+```
+
 ### Resume & Verify
 
 ```bash
@@ -214,7 +233,7 @@ hfdownloader download owner/repo -c 16 --max-active 8
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `-c, --connections` | 8 | Connections per file |
+| `-c, --connections` | 16 | Connections per file |
 | `--max-active` | 3 | Concurrent file downloads |
 | `-F, --filters` | | Include patterns |
 | `-E, --exclude` | | Exclude patterns |

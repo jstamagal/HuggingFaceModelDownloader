@@ -168,7 +168,7 @@ hfdownloader [REPO] [flags]              # Same as above
 
 | Flag | Short | Type | Default | Description |
 |------|-------|------|---------|-------------|
-| `--connections` | `-c` | int | `8` | Connections per file |
+| `--connections` | `-c` | int | `16` | Connections per file |
 | `--max-active` | | int | `3` | Max concurrent downloads |
 | `--multipart-threshold` | | string | `32MiB` | Min size for multipart |
 
@@ -286,7 +286,7 @@ hfdownloader serve [flags]
 | `--addr` | | string | `0.0.0.0` | Bind address |
 | `--port` | `-p` | int | `8080` | Port |
 | `--cache-dir` | | string | `~/.cache/huggingface` | Cache directory |
-| `--connections` | `-c` | int | `8` | Connections per file |
+| `--connections` | `-c` | int | `16` | Connections per file |
 | `--max-active` | | int | `3` | Max concurrent downloads |
 | `--multipart-threshold` | | string | `32MiB` | Min size for multipart |
 | `--verify` | | string | `size` | Verification mode |
@@ -865,7 +865,7 @@ hfdownloader config path
 
 ```json
 {
-  "connections": 8,
+  "connections": 16,
   "max-active": 3,
   "multipart-threshold": "32MiB",
   "verify": "size",
@@ -939,7 +939,7 @@ Configuration is loaded from (in order):
 ```json
 {
   "token": "hf_xxxxx",
-  "connections": 8,
+  "connections": 16,
   "max-active": 3,
   "multipart-threshold": "32MiB",
   "verify": "size",
@@ -962,7 +962,7 @@ Configuration is loaded from (in order):
 
 ```yaml
 token: hf_xxxxx
-connections: 8
+connections: 16
 max-active: 3
 multipart-threshold: 32MiB
 verify: size
