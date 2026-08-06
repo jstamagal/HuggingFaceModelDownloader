@@ -205,7 +205,9 @@ func (m *downloadModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
-		if msg.String() == "ctrl+c" || msg.String() == "q" {
+		// Only ctrl+c cancels — a stray letter key must never abort a
+		// multi-hour download.
+		if msg.String() == "ctrl+c" {
 			// Cancel the download through the process signal path so the
 			// engine shuts down gracefully and persists resume state.
 			// (os.Process.Signal is portable, unlike syscall.Kill.)
