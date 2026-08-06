@@ -75,6 +75,14 @@ type Job struct {
 	// Credits: Feature suggested by jeroenkroese (#41)
 	Excludes []string
 
+	// Files, when non-empty, restricts the download to exactly these
+	// repo-relative file paths (e.g. "Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf"
+	// or "onnx/model.onnx"). Used when the user passes an hf:// URI or a
+	// huggingface.co /blob/ / /resolve/ URL that names a single file.
+	// Unlike Filters, Files matches whole paths and applies to non-LFS files
+	// as well.
+	Files []string
+
 	// ExactMatch controls how Filters are matched. When false (the default),
 	// each filter is matched as a case-insensitive substring (see Filters).
 	// When true, a filter matches only when it equals a whole delimiter-bounded

@@ -107,6 +107,21 @@ func scanRepo(ctx context.Context, httpc *http.Client, token string, job Job, cf
 		relLower := strings.ToLower(rel)
 		isLFS := n.LFS != nil
 
+		// Explicit file selection (hf://owner/repo/path, /blob/ URLs, ...)
+		// is a hard allowlist checked before anything else.
+		if len(job.Files) > 0 {
+			found := false
+			for _, want := range job.Files {
+				if rel == strings.Trim(want, "/") {
+					found = true
+					break
+				}
+			}
+			if !found {
+				return nil
+			}
+		}
+
 		// Check excludes first - if file matches any exclude pattern, skip it
 		// Credits: Exclude feature suggested by jeroenkroese (#41)
 		for _, ex := range job.Excludes {

@@ -56,11 +56,17 @@ Examples:
   hfdownloader analyze --format json TheBloke/Mistral-7B-Instruct-v0.2-GGUF`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			repo := args[0]
-
-			// Validate repo format
-			if !hfdownloader.IsValidModelName(repo) {
-				return fmt.Errorf("invalid repo id %q (expected owner/name)", repo)
+			// Accept owner/name, hf:// URIs, and huggingface.co URLs.
+			ref, err := hfdownloader.ParseRepoRef(args[0])
+			if err != nil {
+				return err
+			}
+			repo := ref.Repo
+			if ref.IsDataset {
+				isDataset = true
+			}
+			if ref.Revision != "" && !cmd.Flags().Changed("revision") {
+				revision = ref.Revision
 			}
 
 			// Get token

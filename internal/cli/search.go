@@ -48,6 +48,13 @@ Examples:
 			query := ""
 			if len(args) == 1 {
 				query = args[0]
+				// Pasting an hf:// URI or hub URL into search should find
+				// that repo, not fail the text match on "https://...".
+				if hfdownloader.LooksLikeRepoURI(query) {
+					if ref, err := hfdownloader.ParseRepoRef(query); err == nil {
+						query = ref.Repo
+					}
+				}
 			}
 			gated, err := parseSearchAccess(access)
 			if err != nil {

@@ -243,8 +243,9 @@ func finalize(cmd *cobra.Command, ro *RootOpts, args []string, job *hfdownloader
 		j.Repo = args[0]
 	}
 
-	// Parse filters from repo:filter syntax
-	if strings.Contains(j.Repo, ":") && len(j.Filters) == 0 {
+	// Parse filters from repo:filter syntax. Skipped for URI forms — the
+	// colon in "hf://" or "https://" is not a filter separator.
+	if strings.Contains(j.Repo, ":") && len(j.Filters) == 0 && !hfdownloader.LooksLikeRepoURI(j.Repo) {
 		parts := strings.SplitN(j.Repo, ":", 2)
 		j.Repo = parts[0]
 		if strings.TrimSpace(parts[1]) != "" {
@@ -255,8 +256,23 @@ func finalize(cmd *cobra.Command, ro *RootOpts, args []string, job *hfdownloader
 	if j.Repo == "" {
 		return j, c, fmt.Errorf("missing REPO (owner/name). Pass as positional arg or --repo")
 	}
-	if !hfdownloader.IsValidModelName(j.Repo) {
-		return j, c, fmt.Errorf("invalid repo id %q (expected owner/name)", j.Repo)
+
+	// Accept owner/name, hf:// URIs, and huggingface.co URLs everywhere a
+	// repo is named. A URL that points at a single file downloads just that
+	// file; a URL that names a branch selects that revision.
+	ref, err := hfdownloader.ParseRepoRef(j.Repo)
+	if err != nil {
+		return j, c, err
+	}
+	j.Repo = ref.Repo
+	if ref.IsDataset {
+		j.IsDataset = true
+	}
+	if ref.Revision != "" && (cmd == nil || !cmd.Flags().Changed("revision")) {
+		j.Revision = ref.Revision
+	}
+	if ref.Path != "" {
+		j.Files = append(j.Files, ref.Path)
 	}
 
 	// Directory resolution: by default (no flags) we download into the HF
