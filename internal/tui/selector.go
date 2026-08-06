@@ -58,6 +58,10 @@ type SelectorModel struct {
 	width  int
 	height int
 
+	// status is a transient message shown in the footer area (e.g. when the
+	// system clipboard is unavailable over SSH).
+	status string
+
 	// Result
 	result SelectorResult
 	done   bool
@@ -168,6 +172,9 @@ func (m *SelectorModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.done = true
 				return m, tea.Quit
 			}
+			// No system clipboard (typical over SSH). The command box above
+			// already shows the full command; say so instead of doing nothing.
+			m.status = "no clipboard available — copy the command shown above"
 		}
 
 	case tea.WindowSizeMsg:
@@ -205,6 +212,9 @@ func (m *SelectorModel) View() string {
 		SummaryValueStyle.Render(fmt.Sprintf("%d items", selectedCount)) +
 		SummaryLabelStyle.Render(" • ") +
 		SummaryValueStyle.Render(humanSize(totalSize))
+	if m.status != "" {
+		summaryLine += SummaryLabelStyle.Render("  •  ") + ErrorStyle.Render(m.status)
+	}
 	summaryLine = fillStyledLine(summaryLine, w, SearchBackgroundStyle)
 	command := m.renderCommandBox(w)
 	footer := fillStyledLine(m.renderFooter(w), w, SearchBottomBarStyle)

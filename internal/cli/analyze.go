@@ -314,8 +314,8 @@ func printSelectableItems(info *smartdl.RepoInfo) {
 		// Determine columns based on category
 		switch cat {
 		case "quantization":
-			fmt.Printf("  %-12s  %12s  %12s  %s  %s\n", "OPTION", "SIZE", "RAM", "QUALITY", "FILTER")
-			fmt.Printf("  %-12s  %12s  %12s  %s  %s\n", "------------", "------------", "------------", "-------", "------")
+			fmt.Printf("  %-20s  %12s  %12s  %s  %s\n", "OPTION", "SIZE", "RAM", "QUALITY", "FILTER")
+			fmt.Printf("  %-20s  %12s  %12s  %s  %s\n", "--------------------", "------------", "------------", "-------", "------")
 			for _, item := range items {
 				stars := ""
 				if item.Quality > 0 {
@@ -325,7 +325,7 @@ func printSelectableItems(info *smartdl.RepoInfo) {
 				if item.Recommended {
 					rec = " *"
 				}
-				fmt.Printf("  %-12s  %12s  %12s  %s  -F %s%s\n",
+				fmt.Printf("  %-20s  %12s  %12s  %s  -F %s%s\n",
 					item.Label,
 					item.SizeHuman,
 					item.RAMHuman,
