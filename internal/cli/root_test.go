@@ -89,7 +89,7 @@ func TestBuildCommandString(t *testing.T) {
 	// Helper to create default settings
 	defaultSettings := func() hfdownloader.Settings {
 		return hfdownloader.Settings{
-			Concurrency:        8,
+			Concurrency:        hfdownloader.DefaultConnections,
 			MaxActiveDownloads: 3,
 			Verify:             "size",
 		}
@@ -166,10 +166,10 @@ func TestBuildCommandString(t *testing.T) {
 	t.Run("with custom concurrency", func(t *testing.T) {
 		job := hfdownloader.Job{Repo: "owner/repo"}
 		cfg := defaultSettings()
-		cfg.Concurrency = 16
+		cfg.Concurrency = 8
 
 		cmd := buildCommandString(nil, job, cfg)
-		expected := "hfdownloader download owner/repo -c 16"
+		expected := "hfdownloader download owner/repo -c 8"
 		if cmd != expected {
 			t.Errorf("cmd = %q, want %q", cmd, expected)
 		}

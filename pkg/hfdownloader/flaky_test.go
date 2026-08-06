@@ -90,6 +90,7 @@ func TestDownloadMultipart_ResumesAfterFlakyConnection(t *testing.T) {
 	}
 	const nParts = 4
 	const partSize = totalSize / nParts // 5000
+	setTestSegmentSize(t, partSize)
 
 	dst := filepath.Join(tmpDir, "blobs", "tmp-flaky")
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
@@ -227,6 +228,7 @@ func TestDownloadMultipart_CancelMidStreamDoesNotClaim100(t *testing.T) {
 		full[i] = byte(i % 251)
 	}
 	const nParts = 4
+	setTestSegmentSize(t, totalSize/nParts)
 
 	dst := filepath.Join(tmpDir, "blobs", "tmp-cancel")
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
@@ -311,21 +313,13 @@ func TestDownloadMultipart_CancelMidStreamDoesNotClaim100(t *testing.T) {
 			lastSeen, totalSize)
 	}
 
-	// At least one part file should survive on disk — assembly must not
-	// have run and deleted them.
-	survived := 0
-	for i := 0; i < nParts; i++ {
-		p := fmt.Sprintf("%s.part-%02d", dst, i)
-		if fi, err := os.Stat(p); err == nil && fi.Size() > 0 {
-			survived++
-		}
+	// The segment file and its resume state must survive on disk so the next
+	// run can pick up where this one stopped.
+	if _, err := os.Stat(dst + ".part"); err != nil {
+		t.Errorf(".part file missing after cancel: %v", err)
 	}
-	if survived == 0 {
-		// It is valid for zero part files to exist if the cancel landed
-		// before any body bytes were written, but we selected the cancel
-		// point after the first progress event, so at least one part
-		// should have committed bytes.
-		t.Errorf("no part-NN files survived after cancel; assembly may have run and deleted them")
+	if _, err := os.Stat(statePathFor(dst)); err != nil {
+		t.Errorf("segment state file missing after cancel: %v", err)
 	}
 
 	// The assembled final file must NOT exist.
@@ -353,6 +347,7 @@ func TestDownloadMultipart_ProgressMonotonic(t *testing.T) {
 		full[i] = byte(i % 251)
 	}
 	const nParts = 4
+	setTestSegmentSize(t, totalSize/nParts)
 
 	dst := filepath.Join(tmpDir, "blobs", "tmp-mono")
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {

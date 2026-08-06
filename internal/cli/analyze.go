@@ -179,17 +179,9 @@ func runInteractiveSelector(ctx context.Context, info *smartdl.RepoInfo, ro *Roo
 		}
 
 		// Build settings - use defaults, then apply config file
-		cfg := hfdownloader.Settings{
-			Token:              token,
-			CacheDir:           cacheDir,
-			Concurrency:        8,
-			MaxActiveDownloads: 3,
-			MultipartThreshold: "32MiB",
-			Verify:             "size",
-			Retries:            4,
-			BackoffInitial:     "400ms",
-			BackoffMax:         "10s",
-		}
+		cfg := hfdownloader.DefaultSettings()
+		cfg.Token = token
+		cfg.CacheDir = cacheDir
 
 		// Load settings from config file (respects cache-dir, connections, etc.)
 		if cfgFile := loadConfigMap(); cfgFile != nil {

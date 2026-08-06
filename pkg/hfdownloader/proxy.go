@@ -107,14 +107,30 @@ func BuildHTTPClient(proxy *ProxyConfig) (*http.Client, error) {
 	return buildHTTPProxyClient(proxy)
 }
 
-// buildHTTPProxyClient creates a client for HTTP/HTTPS proxies.
-func buildHTTPProxyClient(proxyCfg *ProxyConfig) (*http.Client, error) {
-	tr := &http.Transport{
-		MaxIdleConns:          64,
+// newBaseTransport returns the shared transport configuration.
+//
+// HTTP/2 is deliberately disabled (empty TLSNextProto): Hugging Face's CDN
+// throttles per TCP connection, and Go's automatic HTTP/2 multiplexes every
+// "parallel" range request onto a handful of TCP connections, capping
+// throughput at roughly single-connection speed and triggering server-side
+// stream CANCEL resets at higher concurrency. Plain HTTP/1.1 gives each
+// segment its own TCP connection — the same strategy aria2c uses to reach
+// line rate.
+func newBaseTransport() *http.Transport {
+	return &http.Transport{
+		MaxIdleConns:          128,
+		MaxIdleConnsPerHost:   64,
 		IdleConnTimeout:       90 * time.Second,
 		TLSHandshakeTimeout:   10 * time.Second,
 		ExpectContinueTimeout: 1 * time.Second,
+		ForceAttemptHTTP2:     false,
+		TLSNextProto:          map[string]func(string, *tls.Conn) http.RoundTripper{},
 	}
+}
+
+// buildHTTPProxyClient creates a client for HTTP/HTTPS proxies.
+func buildHTTPProxyClient(proxyCfg *ProxyConfig) (*http.Client, error) {
+	tr := newBaseTransport()
 
 	// Configure proxy
 	if proxyCfg != nil && proxyCfg.URL != "" {
@@ -193,23 +209,18 @@ func buildSOCKS5Client(proxyCfg *ProxyConfig) (*http.Client, error) {
 	}
 
 	// Create transport with SOCKS5 dialer
-	tr := &http.Transport{
-		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			// Check if we should bypass proxy
-			host, _, _ := net.SplitHostPort(addr)
-			if shouldBypassProxy(host, noProxyList) {
-				return (&net.Dialer{
-					Timeout:   30 * time.Second,
-					KeepAlive: 30 * time.Second,
-				}).DialContext(ctx, network, addr)
-			}
-			// Use SOCKS5 proxy
-			return dialer.Dial(network, addr)
-		},
-		MaxIdleConns:          64,
-		IdleConnTimeout:       90 * time.Second,
-		TLSHandshakeTimeout:   10 * time.Second,
-		ExpectContinueTimeout: 1 * time.Second,
+	tr := newBaseTransport()
+	tr.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		// Check if we should bypass proxy
+		host, _, _ := net.SplitHostPort(addr)
+		if shouldBypassProxy(host, noProxyList) {
+			return (&net.Dialer{
+				Timeout:   30 * time.Second,
+				KeepAlive: 30 * time.Second,
+			}).DialContext(ctx, network, addr)
+		}
+		// Use SOCKS5 proxy
+		return dialer.Dial(network, addr)
 	}
 
 	if proxyCfg.InsecureSkipVerify {

@@ -8,6 +8,13 @@ import (
 	"time"
 )
 
+// DefaultConnections is the default number of parallel HTTP connections used
+// for segmented (multi-connection) downloads of a single large file. Hugging
+// Face throttles per TCP connection, so one connection tops out well below
+// line rate; 16 connections saturates a 2.5 Gbit/s link in practice (the same
+// default aria2c users reach for with -x16).
+const DefaultConnections = 16
+
 // Job defines what to download from the HuggingFace Hub.
 //
 // A Job specifies the repository, revision, and optional filters for selecting
@@ -133,9 +140,9 @@ type Settings struct {
 	OutputDir string
 
 	// Concurrency is the number of parallel HTTP connections per file
-	// when using multipart downloads. Higher values can improve speed
+	// when using segmented downloads. Higher values can improve speed
 	// on fast networks but increase memory usage.
-	// If <= 0, defaults to 8.
+	// If <= 0, defaults to DefaultConnections (16).
 	Concurrency int
 
 	// MaxActiveDownloads limits how many files download simultaneously.
@@ -307,9 +314,9 @@ func DefaultSettings() Settings {
 	return Settings{
 		CacheDir:           "", // Empty = use DefaultCacheDir()
 		StaleTimeout:       "5m",
-		Concurrency:        8,
-		MaxActiveDownloads: 4,
-		MultipartThreshold: "256MiB",
+		Concurrency:        DefaultConnections,
+		MaxActiveDownloads: 3,
+		MultipartThreshold: "32MiB",
 		Verify:             "size",
 		Retries:            4,
 		BackoffInitial:     "400ms",
