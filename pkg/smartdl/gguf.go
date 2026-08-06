@@ -4,6 +4,7 @@
 package smartdl
 
 import (
+	"fmt"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -147,7 +148,34 @@ var (
 
 	// Match model name from filename (before quant type).
 	modelNamePattern = regexp.MustCompile(`^(.+?)[-._](?:IQ|Q|F|BF)\d`)
+
+	// Multi-part shard suffixes. Real-world styles:
+	//   model-Q6_K-00001-of-00002.gguf          (llama.cpp gguf-split, bartowski)
+	//   Q4_K_M/model-00001-of-00009.gguf        (unsloth: quant-named subdir)
+	//   model.Q8_0.gguf.part1of2                (mradermacher raw splits)
+	ggufShardPattern     = regexp.MustCompile(`(?i)[-._](\d{1,6})-of-(\d{1,6})\.gguf$`)
+	ggufPartShardPattern = regexp.MustCompile(`(?i)\.gguf\.part(\d+)of(\d+)$`)
 )
+
+// isGGUFFile reports whether a filename is a GGUF payload, including raw
+// split pieces like "model.Q8_0.gguf.part1of2" that do not end in ".gguf".
+func isGGUFFile(name string) bool {
+	lower := strings.ToLower(name)
+	return strings.HasSuffix(lower, ".gguf") || ggufPartShardPattern.MatchString(lower)
+}
+
+// stripGGUFShardSuffix removes a multi-part shard marker from a GGUF
+// filename, returning the logical (whole-model) name and whether the file is
+// one shard of a multi-part quant.
+func stripGGUFShardSuffix(name string) (string, bool) {
+	if m := ggufShardPattern.FindStringSubmatchIndex(name); m != nil {
+		return name[:m[0]] + ".gguf", true
+	}
+	if m := ggufPartShardPattern.FindStringSubmatchIndex(name); m != nil {
+		return name[:m[0]] + ".gguf", true
+	}
+	return name, false
+}
 
 // isMMProjFile reports whether a GGUF filename is a multimodal projector
 // (vision encoder) file. These files live alongside LLM quantizations in
@@ -165,10 +193,11 @@ func isMMProjFile(name string) bool {
 func analyzeGGUF(files []FileInfo) *GGUFInfo {
 	info := &GGUFInfo{}
 
-	// Partition .gguf files into LLM quants vs mmproj vision encoders.
+	// Partition GGUF files (including raw split pieces like .gguf.part1of2)
+	// into LLM quants vs mmproj vision encoders.
 	var llmFiles []FileInfo
 	for _, f := range files {
-		if !strings.HasSuffix(strings.ToLower(f.Name), ".gguf") {
+		if !isGGUFFile(f.Name) {
 			continue
 		}
 		if isMMProjFile(f.Name) {
@@ -198,12 +227,39 @@ func analyzeGGUF(files []FileInfo) *GGUFInfo {
 		info.ParameterCount = matches[1] + "B"
 	}
 
-	// Parse each LLM GGUF file (mmproj files are intentionally excluded).
+	// Group LLM GGUF files into quants, collapsing multi-part shards
+	// (…-00001-of-00003.gguf, ….gguf.part1of2) into one entry per quant.
+	// The group key includes the parent directory so repos that ship the
+	// same quant name in different layouts (e.g. per-quant subdirectories)
+	// stay distinct.
+	type quantGroup struct {
+		name  string
+		files []FileInfo
+	}
+	groups := make(map[string]*quantGroup)
+	var order []string
 	for _, f := range llmFiles {
-		quant := parseGGUFQuantization(f)
-		if quant != nil {
-			info.Quantizations = append(info.Quantizations, *quant)
+		logical, _ := stripGGUFShardSuffix(f.Name)
+		name := quantNameForFile(logical, f.Path)
+		key := filepath.Dir(f.Path) + "|" + name
+		if name == "Unknown" {
+			// Don't merge unrelated unknown files; group only true shard
+			// siblings (same logical name).
+			key = filepath.Dir(f.Path) + "|" + strings.ToLower(logical)
 		}
+		g, ok := groups[key]
+		if !ok {
+			g = &quantGroup{name: name}
+			groups[key] = g
+			order = append(order, key)
+		}
+		g.files = append(g.files, f)
+	}
+
+	for _, key := range order {
+		g := groups[key]
+		sort.Slice(g.files, func(i, j int) bool { return g.files[i].Path < g.files[j].Path })
+		info.Quantizations = append(info.Quantizations, buildGGUFQuantization(g.name, g.files))
 	}
 
 	// Sort by quality (descending) then by size (ascending)
@@ -211,58 +267,67 @@ func analyzeGGUF(files []FileInfo) *GGUFInfo {
 		if info.Quantizations[i].Quality != info.Quantizations[j].Quality {
 			return info.Quantizations[i].Quality > info.Quantizations[j].Quality
 		}
-		return info.Quantizations[i].File.Size < info.Quantizations[j].File.Size
+		return info.Quantizations[i].TotalSize < info.Quantizations[j].TotalSize
 	})
 
 	return info
 }
 
-// parseGGUFQuantization extracts quantization info from a GGUF file.
-func parseGGUFQuantization(f FileInfo) *GGUFQuantization {
-	name := strings.ToUpper(filepath.Base(f.Name))
+// quantNameForFile extracts the quantization label for a file, looking at the
+// logical (shard-stripped) filename first and falling back to the parent
+// directory name — unsloth-style repos name the subdirectory after the quant
+// ("Q4_K_M/model-00001-of-00009.gguf") while the shards themselves carry no
+// quant marker.
+func quantNameForFile(logicalName, path string) string {
+	if m := quantPattern.FindStringSubmatch(strings.ToUpper(logicalName)); len(m) > 1 {
+		return strings.ToUpper(m[1])
+	}
+	dir := filepath.Base(filepath.Dir(path))
+	if m := quantPattern.FindStringSubmatch(strings.ToUpper(dir)); len(m) > 1 {
+		return strings.ToUpper(m[1])
+	}
+	return "Unknown"
+}
 
-	// Find quantization type
-	matches := quantPattern.FindStringSubmatch(name)
-	if len(matches) < 2 {
-		// No recognized quantization, might be a split file or unknown format
-		ram := estimateRAM(f.Size)
-		return &GGUFQuantization{
-			Name:              "Unknown",
-			File:              f,
-			Quality:           3,
-			QualityStars:      qualityToStars(3),
-			EstimatedRAM:      ram,
-			EstimatedRAMHuman: humanSize(ram),
-			Description:       "Unknown quantization format",
+// buildGGUFQuantization assembles the collapsed quant entry for a group of
+// shard files (or a single file).
+func buildGGUFQuantization(name string, files []FileInfo) GGUFQuantization {
+	var total int64
+	for _, f := range files {
+		total += f.Size
+	}
+
+	q := GGUFQuantization{
+		Name:           name,
+		File:           files[0],
+		Files:          files,
+		FileCount:      len(files),
+		TotalSize:      total,
+		TotalSizeHuman: humanSize(total),
+	}
+
+	if name == "Unknown" {
+		q.Quality = 3
+		q.Description = "Unknown quantization format"
+	} else {
+		baseType := baseQuantType(name)
+		q.Quality = quantQuality[baseType]
+		if q.Quality == 0 {
+			q.Quality = 3 // default to medium if not found
+		}
+		q.Description = quantDescriptions[baseType]
+		if q.Description == "" {
+			q.Description = "Quantized model"
+		}
+		if baseType != name {
+			layout := strings.TrimPrefix(name, baseType+"_")
+			q.Description += ", optimized " + layout + " layout"
 		}
 	}
-
-	quantType := strings.ToUpper(matches[1])
-	baseType := baseQuantType(quantType)
-	quality := quantQuality[baseType]
-	if quality == 0 {
-		quality = 3 // Default to medium if not found
-	}
-
-	desc := quantDescriptions[baseType]
-	if desc == "" {
-		desc = "Quantized model"
-	}
-	if baseType != quantType {
-		layout := strings.TrimPrefix(quantType, baseType+"_")
-		desc += ", optimized " + layout + " layout"
-	}
-
-	ram := estimateRAM(f.Size)
-	return &GGUFQuantization{
-		Name:              quantType,
-		File:              f,
-		Quality:           quality,
-		QualityStars:      qualityToStars(quality),
-		EstimatedRAM:      ram,
-		EstimatedRAMHuman: humanSize(ram),
-		Description:       desc,
-	}
+	q.QualityStars = qualityToStars(q.Quality)
+	q.EstimatedRAM = estimateRAM(total)
+	q.EstimatedRAMHuman = humanSize(q.EstimatedRAM)
+	return q
 }
 
 func baseQuantType(quantType string) string {
@@ -300,11 +365,17 @@ func RecommendGGUF(info *GGUFInfo, availableRAM int64) []GGUFQuantization {
 	}
 
 	// Sort by quality (best that fits in RAM first)
+	sizeOf := func(q GGUFQuantization) int64 {
+		if q.TotalSize > 0 {
+			return q.TotalSize
+		}
+		return q.File.Size
+	}
 	sort.Slice(recommended, func(i, j int) bool {
 		if recommended[i].Quality != recommended[j].Quality {
 			return recommended[i].Quality > recommended[j].Quality
 		}
-		return recommended[i].File.Size < recommended[j].File.Size
+		return sizeOf(recommended[i]) < sizeOf(recommended[j])
 	})
 
 	return recommended
@@ -359,27 +430,55 @@ func GGUFToSelectableItems(info *GGUFInfo) []SelectableItem {
 	}
 
 	for _, q := range info.Quantizations {
+		// Tolerate GGUFQuantization values built the pre-collapse way
+		// (single File, no Files/TotalSize) — library callers and stored
+		// JSON may still produce them.
+		files := q.Files
+		if len(files) == 0 {
+			files = []FileInfo{q.File}
+		}
+		total := q.TotalSize
+		if total == 0 {
+			total = q.File.Size
+		}
+		sizeHuman := q.TotalSizeHuman
+		if sizeHuman == "" {
+			sizeHuman = q.File.SizeHuman
+		}
+
 		// Determine if this should be recommended
 		// Q4_K_M is a good default, otherwise highest quality in 4-bit range
 		recommended := false
 		if hasQ4KM && q.Name == "Q4_K_M" {
 			recommended = true
-		} else if !hasQ4KM && q.Quality >= 4 && q.File.Size < 10*1024*1024*1024 { // < 10 GiB
+		} else if !hasQ4KM && q.Quality >= 4 && total < 10*1024*1024*1024 { // < 10 GiB
 			recommended = true
+		}
+
+		// Multi-part quants read as one entry: "Q4_K_M (3 files)" with the
+		// combined size; selecting it downloads every shard.
+		label := q.Name
+		if len(files) > 1 {
+			label = fmt.Sprintf("%s (%d files)", q.Name, len(files))
+		}
+
+		paths := make([]string, 0, len(files))
+		for _, f := range files {
+			paths = append(paths, f.Path)
 		}
 
 		item := SelectableItem{
 			ID:           strings.ToLower(q.Name),
-			Label:        q.Name,
+			Label:        label,
 			Description:  q.Description,
-			Size:         q.File.Size,
-			SizeHuman:    q.File.SizeHuman,
+			Size:         total,
+			SizeHuman:    sizeHuman,
 			Quality:      q.Quality,
 			QualityStars: q.QualityStars,
 			Recommended:  recommended,
 			Category:     "quantization",
 			FilterValue:  strings.ToLower(q.Name),
-			Files:        []string{q.File.Path},
+			Files:        paths,
 			RAM:          q.EstimatedRAM,
 			RAMHuman:     q.EstimatedRAMHuman,
 		}

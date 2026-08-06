@@ -232,13 +232,28 @@ type GGUFInfo struct {
 	MMProjFiles []FileInfo `json:"mmproj_files,omitempty"`
 }
 
-// GGUFQuantization represents a single GGUF quantization option.
+// GGUFQuantization represents a single GGUF quantization option. A quant may
+// span multiple shard files (e.g. "-00001-of-00003.gguf"); those are collapsed
+// into one entry with the combined size.
 type GGUFQuantization struct {
 	// Name is the quantization name (e.g., "Q4_K_M").
 	Name string `json:"name"`
 
-	// File is the file info for this quantization.
+	// File is the file info for this quantization (first shard when split).
 	File FileInfo `json:"file"`
+
+	// Files lists every file belonging to this quant, in shard order.
+	// Single-file quants have exactly one entry (same as File).
+	Files []FileInfo `json:"files,omitempty"`
+
+	// FileCount is len(Files).
+	FileCount int `json:"file_count,omitempty"`
+
+	// TotalSize is the combined size of all shards in bytes.
+	TotalSize int64 `json:"total_size,omitempty"`
+
+	// TotalSizeHuman is the human-readable combined size.
+	TotalSizeHuman string `json:"total_size_human,omitempty"`
 
 	// Quality is the quality rating (1-5 stars).
 	Quality int `json:"quality"`

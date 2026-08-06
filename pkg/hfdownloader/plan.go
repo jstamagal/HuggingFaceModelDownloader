@@ -137,7 +137,10 @@ func scanRepo(ctx context.Context, httpc *http.Client, token string, job Job, cf
 		if isLFS && len(job.Filters) > 0 {
 			for _, f := range job.Filters {
 				fLower := strings.ToLower(f)
-				if filterMatches(nameLower, fLower, job.ExactMatch) {
+				// Match against the file name and the full repo-relative
+				// path: repos like unsloth's put the quant name only in the
+				// parent directory ("Q4_K_M/model-00001-of-00009.gguf").
+				if filterMatches(nameLower, fLower, job.ExactMatch) || filterMatches(relLower, fLower, job.ExactMatch) {
 					if len(f) > len(matchedFilter) {
 						matchedFilter = f
 					}
@@ -224,9 +227,11 @@ func filterMatches(nameLower, fLower string, exact bool) bool {
 
 // isFilterDelimiter reports whether r separates segments for exact-match
 // filtering. Underscores are intentionally NOT delimiters because quantization
-// names contain them (e.g. Q6_K, Q4_K_M).
+// names contain them (e.g. Q6_K, Q4_K_M). Path separators are delimiters so a
+// quant-named directory ("Q4_K_M/model-00001-of-00009.gguf") matches in exact
+// mode too.
 func isFilterDelimiter(r rune) bool {
-	return r == '-' || r == '.' || r == ' '
+	return r == '-' || r == '.' || r == ' ' || r == '/'
 }
 
 // destinationBase returns the base output directory for a job.

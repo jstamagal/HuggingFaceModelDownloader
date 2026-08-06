@@ -293,13 +293,14 @@ func TestAnalyzeGGUF(t *testing.T) {
 }
 
 func TestParseGGUFQuantization(t *testing.T) {
-	t.Run("standard quantization", func(t *testing.T) {
-		file := FileInfo{Name: "model.Q4_K_M.gguf", Path: "model.Q4_K_M.gguf", Size: 4000000000}
-		quant := parseGGUFQuantization(file)
+	// single-file helper mirroring the old per-file parse API
+	parseOne := func(f FileInfo) GGUFQuantization {
+		logical, _ := stripGGUFShardSuffix(f.Name)
+		return buildGGUFQuantization(quantNameForFile(logical, f.Path), []FileInfo{f})
+	}
 
-		if quant == nil {
-			t.Fatal("expected non-nil")
-		}
+	t.Run("standard quantization", func(t *testing.T) {
+		quant := parseOne(FileInfo{Name: "model.Q4_K_M.gguf", Path: "model.Q4_K_M.gguf", Size: 4000000000})
 		if quant.Name != "Q4_K_M" {
 			t.Errorf("Name = %q", quant.Name)
 		}
@@ -315,8 +316,7 @@ func TestParseGGUFQuantization(t *testing.T) {
 	})
 
 	t.Run("optimized interleaved quantization", func(t *testing.T) {
-		file := FileInfo{Name: "model-Q4_0_4_8.gguf", Size: 4_000_000_000}
-		quant := parseGGUFQuantization(file)
+		quant := parseOne(FileInfo{Name: "model-Q4_0_4_8.gguf", Path: "model-Q4_0_4_8.gguf", Size: 4_000_000_000})
 		if quant.Name != "Q4_0_4_8" {
 			t.Fatalf("Name = %q", quant.Name)
 		}
@@ -329,9 +329,7 @@ func TestParseGGUFQuantization(t *testing.T) {
 	})
 
 	t.Run("importance matrix quantization", func(t *testing.T) {
-		file := FileInfo{Name: "model.IQ2_XS.gguf", Path: "model.IQ2_XS.gguf", Size: 1000000000}
-		quant := parseGGUFQuantization(file)
-
+		quant := parseOne(FileInfo{Name: "model.IQ2_XS.gguf", Path: "model.IQ2_XS.gguf", Size: 1000000000})
 		if quant.Name != "IQ2_XS" {
 			t.Errorf("Name = %q", quant.Name)
 		}
@@ -341,9 +339,7 @@ func TestParseGGUFQuantization(t *testing.T) {
 	})
 
 	t.Run("float precision", func(t *testing.T) {
-		file := FileInfo{Name: "model-F16.gguf", Path: "model-F16.gguf", Size: 14000000000}
-		quant := parseGGUFQuantization(file)
-
+		quant := parseOne(FileInfo{Name: "model-F16.gguf", Path: "model-F16.gguf", Size: 14000000000})
 		if quant.Name != "F16" {
 			t.Errorf("Name = %q", quant.Name)
 		}
@@ -353,9 +349,7 @@ func TestParseGGUFQuantization(t *testing.T) {
 	})
 
 	t.Run("RAM estimate included", func(t *testing.T) {
-		file := FileInfo{Name: "model.Q4_K_M.gguf", Path: "model.Q4_K_M.gguf", Size: 4000000000}
-		quant := parseGGUFQuantization(file)
-
+		quant := parseOne(FileInfo{Name: "model.Q4_K_M.gguf", Path: "model.Q4_K_M.gguf", Size: 4000000000})
 		if quant.EstimatedRAM == 0 {
 			t.Error("EstimatedRAM should be non-zero")
 		}
