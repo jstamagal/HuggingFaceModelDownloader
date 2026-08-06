@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 
 	"github.com/bodaay/HuggingFaceModelDownloader/internal/tui"
 	"github.com/bodaay/HuggingFaceModelDownloader/pkg/hfdownloader"
@@ -84,6 +85,23 @@ Examples:
 				enc := json.NewEncoder(os.Stdout)
 				enc.SetIndent("", "  ")
 				return enc.Encode(models)
+			}
+
+			// Without a terminal (piped/scripted), print a plain listing
+			// instead of trying to start the interactive browser.
+			if !term.IsTerminal(int(os.Stdout.Fd())) || !term.IsTerminal(int(os.Stdin.Fd())) {
+				models, err := hfdownloader.SearchModels(ctx, opts)
+				if err != nil {
+					return err
+				}
+				for _, model := range models {
+					task := model.PipelineTag
+					if task == "" {
+						task = "-"
+					}
+					fmt.Printf("%s\t%d downloads\t%d likes\t%s\n", model.ID, model.Downloads, model.Likes, task)
+				}
+				return nil
 			}
 
 			result, err := tui.RunModelSearch(ctx, opts)

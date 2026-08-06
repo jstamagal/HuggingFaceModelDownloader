@@ -59,8 +59,8 @@ func TestModelSearchViewUsesNarrowLayout(t *testing.T) {
 
 func TestModelSearchNavigationAndFilters(t *testing.T) {
 	m := newModelSearchModelWithFetcher(context.Background(), hfdownloader.ModelSearchOptions{Query: "llama", Sort: "trending"},
-		func(context.Context, hfdownloader.ModelSearchOptions) ([]hfdownloader.ModelSearchResult, error) {
-			return nil, nil
+		func(context.Context, hfdownloader.ModelSearchOptions, string) (*hfdownloader.ModelSearchPage, error) {
+			return &hfdownloader.ModelSearchPage{}, nil
 		})
 	m.results = sampleSearchResults(3)
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown})
@@ -93,8 +93,8 @@ func TestModelSearchIgnoresStaleResponses(t *testing.T) {
 
 func TestExplicitSearchInvalidatesPendingDebounce(t *testing.T) {
 	m := newModelSearchModelWithFetcher(context.Background(), hfdownloader.ModelSearchOptions{Query: "x"},
-		func(context.Context, hfdownloader.ModelSearchOptions) ([]hfdownloader.ModelSearchResult, error) {
-			return nil, nil
+		func(context.Context, hfdownloader.ModelSearchOptions, string) (*hfdownloader.ModelSearchPage, error) {
+			return &hfdownloader.ModelSearchPage{}, nil
 		})
 	m.debounceID = 7
 	_ = m.startSearch()
@@ -187,4 +187,88 @@ func sampleSearchResults(count int) []hfdownloader.ModelSearchResult {
 		}
 	}
 	return results
+}
+
+func TestModelSearchLoadsMorePagesOnScroll(t *testing.T) {
+	var pageCalls []string
+	fetcher := func(_ context.Context, _ hfdownloader.ModelSearchOptions, pageURL string) (*hfdownloader.ModelSearchPage, error) {
+		pageCalls = append(pageCalls, pageURL)
+		if pageURL == "" {
+			return &hfdownloader.ModelSearchPage{Results: sampleSearchResults(10), NextPageURL: "cursor-2"}, nil
+		}
+		return &hfdownloader.ModelSearchPage{Results: []hfdownloader.ModelSearchResult{
+			{ID: "owner/page2-model"},
+			{ID: "owner/model-03"}, // duplicate of page 1: must be dropped
+		}}, nil
+	}
+	m := newModelSearchModelWithFetcher(context.Background(), hfdownloader.ModelSearchOptions{Query: "x"}, fetcher)
+	m.height = 12
+
+	// Simulate the initial response.
+	updated, _ := m.Update(searchResponseMsg{id: m.requestID, results: sampleSearchResults(10), next: "cursor-2"})
+	m = updated.(*ModelSearchModel)
+	if m.nextPage != "cursor-2" {
+		t.Fatalf("nextPage = %q", m.nextPage)
+	}
+	if !strings.Contains(m.status, "more") {
+		t.Errorf("status %q does not hint at more pages", m.status)
+	}
+
+	// Jump to the end: should trigger a load-more fetch.
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnd})
+	m = updated.(*ModelSearchModel)
+	if cmd == nil {
+		t.Fatal("expected load-more command at end of list")
+	}
+	msg := extractSearchResponse(t, cmd())
+	if !msg.appends {
+		t.Fatalf("expected appending page response, got %+v", msg)
+	}
+	updated, _ = m.Update(msg)
+	m = updated.(*ModelSearchModel)
+
+	if len(m.results) != 11 {
+		t.Fatalf("results = %d, want 11 (10 + 1 new, duplicate dropped)", len(m.results))
+	}
+	if m.results[10].ID != "owner/page2-model" {
+		t.Errorf("appended result = %q", m.results[10].ID)
+	}
+	if m.nextPage != "" {
+		t.Errorf("nextPage = %q, want cleared", m.nextPage)
+	}
+	if len(pageCalls) == 0 || pageCalls[len(pageCalls)-1] != "cursor-2" {
+		t.Errorf("fetcher page calls = %v", pageCalls)
+	}
+}
+
+// extractSearchResponse pulls the searchResponseMsg out of a possibly-batched
+// command result.
+func extractSearchResponse(t *testing.T, msg tea.Msg) searchResponseMsg {
+	t.Helper()
+	switch v := msg.(type) {
+	case searchResponseMsg:
+		return v
+	case tea.BatchMsg:
+		for _, c := range v {
+			if c == nil {
+				continue
+			}
+			if resp, ok := c().(searchResponseMsg); ok {
+				return resp
+			}
+		}
+	}
+	t.Fatalf("no searchResponseMsg in %T", msg)
+	return searchResponseMsg{}
+}
+
+func TestModelSearchStaleLoadMoreDropped(t *testing.T) {
+	m := newModelSearchModelWithFetcher(context.Background(), hfdownloader.ModelSearchOptions{Query: "x"}, nil)
+	m.requestID = 3
+	m.results = sampleSearchResults(2)
+	updated, _ := m.Update(searchResponseMsg{id: 2, appends: true, results: []hfdownloader.ModelSearchResult{{ID: "stale/model"}}})
+	m = updated.(*ModelSearchModel)
+	if len(m.results) != 2 {
+		t.Fatalf("stale page appended: %d results", len(m.results))
+	}
 }

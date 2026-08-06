@@ -39,12 +39,22 @@ func Execute(version string) error {
 	ctx, cancel := signalContext(context.Background())
 	defer cancel()
 
+	var theme string
 	root := &cobra.Command{
 		Use:           "hfdownloader",
 		Short:         "Fast, resumable downloader for Hugging Face models & datasets",
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		Version:       version,
+		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+			switch theme {
+			case "auto", "light", "dark":
+				tui.SetTheme(theme)
+				return nil
+			default:
+				return fmt.Errorf("invalid --theme %q (use auto, light, or dark)", theme)
+			}
+		},
 	}
 
 	// Global flags
@@ -55,6 +65,7 @@ func Execute(version string) error {
 	root.PersistentFlags().StringVar(&ro.Config, "config", "", "Path to config file (JSON or YAML)")
 	root.PersistentFlags().StringVar(&ro.LogFile, "log-file", "", "Write logs to file (in addition to stderr)")
 	root.PersistentFlags().StringVar(&ro.LogLevel, "log-level", "info", "Log level: debug, info, warn, error")
+	root.PersistentFlags().StringVar(&theme, "theme", "auto", "Color theme for interactive UI: auto, light, dark (auto detects the terminal background)")
 
 	// Add commands
 	downloadCmd := newDownloadCmd(ctx, ro)

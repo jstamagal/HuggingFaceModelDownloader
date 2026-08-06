@@ -4,27 +4,51 @@
 package tui
 
 import (
+	"strings"
+
 	"github.com/charmbracelet/lipgloss"
 )
 
-// Color palette
+// Color palette.
+//
+// Every color is a lipgloss.AdaptiveColor with a variant for light and dark
+// terminal backgrounds. lipgloss detects the background (termenv OSC 11 /
+// COLORFGBG) at first render; SetTheme provides a manual override for
+// terminals where detection fails. No style ever paints a full-screen
+// background — the terminal's own background shows through, which is the only
+// scheme that stays readable in both black-on-white and white-on-black
+// setups.
 var (
-	ColorBackground = lipgloss.Color("0")
-	ColorBar        = lipgloss.Color("4")
-	ColorBarText    = lipgloss.Color("15")
+	ColorPrimary   = lipgloss.AdaptiveColor{Light: "31", Dark: "86"}   // teal / cyan
+	ColorSecondary = lipgloss.AdaptiveColor{Light: "55", Dark: "99"}   // purple
+	ColorSuccess   = lipgloss.AdaptiveColor{Light: "28", Dark: "82"}   // green
+	ColorWarning   = lipgloss.AdaptiveColor{Light: "130", Dark: "214"} // orange
+	ColorError     = lipgloss.AdaptiveColor{Light: "124", Dark: "196"} // red
+	ColorMuted     = lipgloss.AdaptiveColor{Light: "244", Dark: "245"} // gray
+	ColorHighlight = lipgloss.AdaptiveColor{Light: "94", Dark: "229"}  // yellow/gold
 
-	ColorPrimary   = lipgloss.Color("86")  // Cyan
-	ColorSecondary = lipgloss.Color("99")  // Purple
-	ColorSuccess   = lipgloss.Color("82")  // Green
-	ColorWarning   = lipgloss.Color("214") // Orange
-	ColorError     = lipgloss.Color("196") // Red
-	ColorMuted     = lipgloss.Color("241") // Gray
-	ColorHighlight = lipgloss.Color("229") // Yellow
+	ColorBorder      = lipgloss.AdaptiveColor{Light: "250", Dark: "238"}
+	ColorBorderFocus = lipgloss.AdaptiveColor{Light: "31", Dark: "86"}
 
-	ColorBorder       = lipgloss.Color("238")
-	ColorBorderFocus  = lipgloss.Color("86")
-	ColorBorderActive = lipgloss.Color("82")
+	// Explicit foreground/background pairs (safe on any terminal because both
+	// sides are specified).
+	colorBarBg      = lipgloss.AdaptiveColor{Light: "24", Dark: "24"} // deep blue
+	colorBarFg      = lipgloss.AdaptiveColor{Light: "231", Dark: "231"}
+	colorSubtleBg   = lipgloss.AdaptiveColor{Light: "253", Dark: "236"}
+	colorSubtleFg   = lipgloss.AdaptiveColor{Light: "238", Dark: "250"}
+	colorSelectedFg = lipgloss.AdaptiveColor{Light: "231", Dark: "16"}
 )
+
+// SetTheme overrides background detection: "light", "dark", or "auto"
+// (keep lipgloss/termenv detection). Call before any TUI starts.
+func SetTheme(theme string) {
+	switch strings.ToLower(strings.TrimSpace(theme)) {
+	case "light":
+		lipgloss.SetHasDarkBackground(false)
+	case "dark":
+		lipgloss.SetHasDarkBackground(true)
+	}
+}
 
 // Selector styles
 var (
@@ -62,7 +86,7 @@ var (
 
 	// Labels
 	RecommendedBadge = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("0")).
+				Foreground(colorSelectedFg).
 				Background(ColorSuccess).
 				Padding(0, 1).
 				SetString("recommended")
@@ -133,8 +157,8 @@ var (
 
 	// Status bar
 	StatusBarStyle = lipgloss.NewStyle().
-			Foreground(ColorMuted).
-			Background(lipgloss.Color("236")).
+			Foreground(colorSubtleFg).
+			Background(colorSubtleBg).
 			Padding(0, 1)
 
 	// Help keys
@@ -154,38 +178,33 @@ var (
 			Foreground(ColorSuccess).
 			Bold(true)
 
-	// Search browser styles. The bars borrow BitchX's ANSI-blue chrome while
-	// the focused panels and selection treatment follow the compact OMP picker.
-	SearchScreenStyle = lipgloss.NewStyle().
-				Foreground(ColorBarText).
-				Background(ColorBackground)
+	// Search browser styles. Bars use explicit fg+bg pairs; panels and text
+	// inherit the terminal background and use adaptive foregrounds.
+	SearchScreenStyle = lipgloss.NewStyle()
 
-	SearchBackgroundStyle = lipgloss.NewStyle().
-				Foreground(ColorBarText).
-				Background(ColorBackground)
+	SearchBackgroundStyle = lipgloss.NewStyle()
 
 	SearchTopBarStyle = lipgloss.NewStyle().
 				Bold(true).
-				Foreground(ColorBarText).
-				Background(ColorBar)
+				Foreground(colorBarFg).
+				Background(colorBarBg)
 
 	SearchBottomBarStyle = lipgloss.NewStyle().
-				Foreground(ColorBarText).
-				Background(lipgloss.Color("236"))
+				Foreground(colorSubtleFg).
+				Background(colorSubtleBg)
 
-	SearchHeavySeparatorStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("12"))
+	SearchHeavySeparatorStyle = lipgloss.NewStyle().Foreground(ColorBorder)
 	SearchPanelStyle          = lipgloss.NewStyle().
 					Border(lipgloss.RoundedBorder()).
 					BorderForeground(ColorBorder).
-					Padding(0, 1).
-					Background(ColorBackground)
+					Padding(0, 1)
 	SearchFocusedPanelStyle = SearchPanelStyle.BorderForeground(ColorBorderFocus)
 	SearchPanelTitleStyle   = lipgloss.NewStyle().Bold(true).Foreground(ColorSecondary)
 	SearchSelectedStyle     = lipgloss.NewStyle().
 				Bold(true).
-				Foreground(lipgloss.Color("0")).
+				Foreground(colorSelectedFg).
 				Background(ColorPrimary)
-	SearchResultIDStyle    = lipgloss.NewStyle().Foreground(ColorBarText)
+	SearchResultIDStyle    = lipgloss.NewStyle()
 	SearchMutedStyle       = lipgloss.NewStyle().Foreground(ColorMuted)
 	SearchAccentStyle      = lipgloss.NewStyle().Bold(true).Foreground(ColorPrimary)
 	SearchInputPromptStyle = lipgloss.NewStyle().Bold(true).Foreground(ColorSecondary)
@@ -193,7 +212,7 @@ var (
 	SearchFilterKeyStyle   = lipgloss.NewStyle().Bold(true).Foreground(ColorSecondary)
 	SearchFilterValueStyle = lipgloss.NewStyle().Foreground(ColorPrimary)
 	SearchDetailLabelStyle = lipgloss.NewStyle().Foreground(ColorMuted)
-	SearchDetailValueStyle = lipgloss.NewStyle().Foreground(ColorBarText)
+	SearchDetailValueStyle = lipgloss.NewStyle()
 	SearchHelpKeyStyle     = lipgloss.NewStyle().Bold(true).Foreground(ColorPrimary)
 	SearchErrorStyle       = lipgloss.NewStyle().Bold(true).Foreground(ColorError)
 )
@@ -240,6 +259,8 @@ func FormatCategoryTitle(category string) string {
 		return "Weight Format"
 	case "precision":
 		return "Precision"
+	case "vision_encoder":
+		return "Vision Encoder (mmproj)"
 	default:
 		return "Options"
 	}

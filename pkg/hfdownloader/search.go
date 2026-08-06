@@ -71,8 +71,27 @@ func (g *GatedStatus) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// SearchModels searches model repositories using the Hugging Face Hub API.
+// ModelSearchPage is one page of search results. NextPageURL carries the Hub's
+// cursor URL for the following page ("" when this is the last page).
+type ModelSearchPage struct {
+	Results     []ModelSearchResult
+	NextPageURL string
+}
+
+// SearchModels searches model repositories using the Hugging Face Hub API and
+// returns the first page of results.
 func SearchModels(ctx context.Context, opts ModelSearchOptions) ([]ModelSearchResult, error) {
+	page, err := SearchModelsPage(ctx, opts, "")
+	if err != nil {
+		return nil, err
+	}
+	return page.Results, nil
+}
+
+// SearchModelsPage searches model repositories. When pageURL is non-empty it
+// must be a NextPageURL from a previous page, and opts only supplies the
+// token/endpoint/HTTP client (the Hub encodes the query in the cursor URL).
+func SearchModelsPage(ctx context.Context, opts ModelSearchOptions, pageURL string) (*ModelSearchPage, error) {
 	if opts.Limit <= 0 {
 		opts.Limit = 50
 	}
@@ -80,28 +99,31 @@ func SearchModels(ctx context.Context, opts ModelSearchOptions) ([]ModelSearchRe
 		return nil, fmt.Errorf("search limit must be between 1 and 1000")
 	}
 
-	values := url.Values{}
-	setQueryValue(values, "search", opts.Query)
-	setQueryValue(values, "author", opts.Author)
-	setQueryValue(values, "pipeline_tag", opts.PipelineTag)
-	setQueryValue(values, "library", opts.Library)
-	if opts.Gated != nil {
-		values.Set("gated", strconv.FormatBool(*opts.Gated))
-	}
-	if sortKey := hubSortKey(opts.Sort); sortKey != "" {
-		values.Set("sort", sortKey)
-		values.Set("direction", "-1")
-	}
-	values.Set("limit", strconv.Itoa(opts.Limit))
-	for _, field := range []string{
-		"author", "downloads", "likes", "trendingScore", "lastModified",
-		"createdAt", "pipeline_tag", "library_name", "gated", "private",
-		"disabled", "tags",
-	} {
-		values.Add("expand[]", field)
+	reqURL := pageURL
+	if reqURL == "" {
+		values := url.Values{}
+		setQueryValue(values, "search", opts.Query)
+		setQueryValue(values, "author", opts.Author)
+		setQueryValue(values, "pipeline_tag", opts.PipelineTag)
+		setQueryValue(values, "library", opts.Library)
+		if opts.Gated != nil {
+			values.Set("gated", strconv.FormatBool(*opts.Gated))
+		}
+		if sortKey := hubSortKey(opts.Sort); sortKey != "" {
+			values.Set("sort", sortKey)
+			values.Set("direction", "-1")
+		}
+		values.Set("limit", strconv.Itoa(opts.Limit))
+		for _, field := range []string{
+			"author", "downloads", "likes", "trendingScore", "lastModified",
+			"createdAt", "pipeline_tag", "library_name", "gated", "private",
+			"disabled", "tags",
+		} {
+			values.Add("expand[]", field)
+		}
+		reqURL = getEndpoint(opts.Endpoint) + "/api/models?" + values.Encode()
 	}
 
-	reqURL := getEndpoint(opts.Endpoint) + "/api/models?" + values.Encode()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
 	if err != nil {
 		return nil, err
@@ -128,7 +150,26 @@ func SearchModels(ctx context.Context, opts ModelSearchOptions) ([]ModelSearchRe
 	if err := json.NewDecoder(resp.Body).Decode(&results); err != nil {
 		return nil, fmt.Errorf("decode Hugging Face model search: %w", err)
 	}
-	return results, nil
+	return &ModelSearchPage{
+		Results:     results,
+		NextPageURL: parseNextLink(resp.Header.Get("Link")),
+	}, nil
+}
+
+// parseNextLink extracts the rel="next" URL from an RFC 8288 Link header.
+func parseNextLink(header string) string {
+	for _, part := range strings.Split(header, ",") {
+		part = strings.TrimSpace(part)
+		if !strings.Contains(part, `rel="next"`) {
+			continue
+		}
+		start := strings.Index(part, "<")
+		end := strings.Index(part, ">")
+		if start >= 0 && end > start {
+			return part[start+1 : end]
+		}
+	}
+	return ""
 }
 
 func setQueryValue(values url.Values, key, value string) {

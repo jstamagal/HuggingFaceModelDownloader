@@ -33,11 +33,13 @@ type ModelSearchResult struct {
 	Cancelled bool
 }
 
-type modelSearchFetcher func(context.Context, hfdownloader.ModelSearchOptions) ([]hfdownloader.ModelSearchResult, error)
+type modelSearchFetcher func(ctx context.Context, opts hfdownloader.ModelSearchOptions, pageURL string) (*hfdownloader.ModelSearchPage, error)
 
 type searchResponseMsg struct {
 	id      int
 	results []hfdownloader.ModelSearchResult
+	next    string
+	appends bool // true when this is a "load more" page to append
 	err     error
 }
 
@@ -60,6 +62,8 @@ type ModelSearchModel struct {
 	requestID    int
 	debounceID   int
 	loading      bool
+	loadingMore  bool
+	nextPage     string
 	spinnerFrame int
 	err          error
 	status       string
@@ -69,7 +73,7 @@ type ModelSearchModel struct {
 
 // NewModelSearchModel creates a full-screen Hugging Face model browser.
 func NewModelSearchModel(ctx context.Context, opts hfdownloader.ModelSearchOptions) *ModelSearchModel {
-	return newModelSearchModelWithFetcher(ctx, opts, hfdownloader.SearchModels)
+	return newModelSearchModelWithFetcher(ctx, opts, hfdownloader.SearchModelsPage)
 }
 
 func newModelSearchModelWithFetcher(ctx context.Context, opts hfdownloader.ModelSearchOptions, fetcher modelSearchFetcher) *ModelSearchModel {
@@ -105,7 +109,7 @@ func newModelSearchModelWithFetcher(ctx context.Context, opts hfdownloader.Model
 
 // Init implements tea.Model.
 func (m *ModelSearchModel) Init() tea.Cmd {
-	return tea.Batch(m.startSearch(), m.input.Cursor.BlinkCmd(), searchSpinnerTick())
+	return tea.Batch(m.startSearch(), m.input.Cursor.BlinkCmd())
 }
 
 // Update implements tea.Model.
@@ -117,9 +121,10 @@ func (m *ModelSearchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case searchSpinnerMsg:
-		if m.loading {
-			m.spinnerFrame = (m.spinnerFrame + 1) % len(spinnerFrames)
+		if !m.loading && !m.loadingMore {
+			return m, nil // stop ticking while idle
 		}
+		m.spinnerFrame = (m.spinnerFrame + 1) % len(spinnerFrames)
 		return m, searchSpinnerTick()
 
 	case searchDebounceMsg:
@@ -132,6 +137,18 @@ func (m *ModelSearchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.id != m.requestID {
 			return m, nil
 		}
+		if msg.appends {
+			m.loadingMore = false
+			if msg.err != nil {
+				// Keep what we have; surface the paging failure in the status.
+				m.status = "load more failed: " + msg.err.Error()
+				return m, nil
+			}
+			m.results = append(m.results, dedupeNewResults(m.results, msg.results)...)
+			m.nextPage = msg.next
+			m.status = m.resultCountStatus()
+			return m, nil
+		}
 		m.loading = false
 		m.err = msg.err
 		if msg.err == nil {
@@ -140,8 +157,9 @@ func (m *ModelSearchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				previousID = m.results[m.cursor].ID
 			}
 			m.results = msg.results
+			m.nextPage = msg.next
 			m.cursor = findModelResult(msg.results, previousID)
-			m.status = fmt.Sprintf("%d models", len(msg.results))
+			m.status = m.resultCountStatus()
 		}
 		return m, nil
 
@@ -168,7 +186,7 @@ func (m *ModelSearchModel) updateInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "esc":
 		m.input.Blur()
 		return m, nil
-	case "enter", "down", "tab":
+	case "enter", "down", "up", "tab":
 		m.input.Blur()
 		return m, m.startSearch()
 	}
@@ -200,14 +218,17 @@ func (m *ModelSearchModel) updateBrowser(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.cursor < len(m.results)-1 {
 			m.cursor++
 		}
+		return m, m.maybeLoadMore()
 	case "pgup":
 		m.cursor = searchMax(0, m.cursor-m.resultPageSize())
 	case "pgdown":
 		m.cursor = searchMin(searchMax(0, len(m.results)-1), m.cursor+m.resultPageSize())
+		return m, m.maybeLoadMore()
 	case "home":
 		m.cursor = 0
 	case "end":
 		m.cursor = searchMax(0, len(m.results)-1)
+		return m, m.maybeLoadMore()
 	case "s":
 		m.opts.Sort = cycleSearchValue(m.opts.Sort, searchSorts)
 		return m, m.startSearch()
@@ -226,7 +247,9 @@ func (m *ModelSearchModel) updateBrowser(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if selected := m.selected(); selected != nil {
 			command := "hfdownloader analyze " + selected.ID + " -i"
 			if err := clipboard.WriteAll(command); err != nil {
-				m.status = "copy failed: " + err.Error()
+				// No system clipboard (typical over SSH): show the command so
+				// it can be copied from the terminal instead.
+				m.status = "no clipboard — " + command
 			} else {
 				m.status = "copied: " + command
 			}
@@ -277,13 +300,67 @@ func (m *ModelSearchModel) startSearch() tea.Cmd {
 	m.requestID++
 	id := m.requestID
 	m.loading = true
+	m.loadingMore = false
 	m.err = nil
 	m.status = "searching Hugging Face Hub"
 	opts := m.searchOptions()
-	return func() tea.Msg {
-		results, err := m.fetcher(m.ctx, opts)
-		return searchResponseMsg{id: id, results: results, err: err}
+	fetch := func() tea.Msg {
+		page, err := m.fetcher(m.ctx, opts, "")
+		if err != nil {
+			return searchResponseMsg{id: id, err: err}
+		}
+		return searchResponseMsg{id: id, results: page.Results, next: page.NextPageURL}
 	}
+	return tea.Batch(fetch, searchSpinnerTick())
+}
+
+// maybeLoadMore fetches the next page when the cursor approaches the end of
+// the loaded results and the Hub reported more pages.
+func (m *ModelSearchModel) maybeLoadMore() tea.Cmd {
+	if m.nextPage == "" || m.loading || m.loadingMore {
+		return nil
+	}
+	if len(m.results)-m.cursor > m.resultPageSize() {
+		return nil
+	}
+	m.loadingMore = true
+	id := m.requestID
+	opts := m.searchOptions()
+	pageURL := m.nextPage
+	fetch := func() tea.Msg {
+		page, err := m.fetcher(m.ctx, opts, pageURL)
+		if err != nil {
+			return searchResponseMsg{id: id, appends: true, err: err}
+		}
+		return searchResponseMsg{id: id, appends: true, results: page.Results, next: page.NextPageURL}
+	}
+	return tea.Batch(fetch, searchSpinnerTick())
+}
+
+// resultCountStatus renders the "N models" status, marking when more pages
+// are available on the Hub.
+func (m *ModelSearchModel) resultCountStatus() string {
+	if m.nextPage != "" {
+		return fmt.Sprintf("%d models — scroll for more", len(m.results))
+	}
+	return fmt.Sprintf("%d models", len(m.results))
+}
+
+// dedupeNewResults drops entries already present (by ID) so a shifted cursor
+// page can never produce duplicate rows.
+func dedupeNewResults(existing, incoming []hfdownloader.ModelSearchResult) []hfdownloader.ModelSearchResult {
+	seen := make(map[string]struct{}, len(existing))
+	for i := range existing {
+		seen[existing[i].ID] = struct{}{}
+	}
+	out := incoming[:0]
+	for _, r := range incoming {
+		if _, dup := seen[r.ID]; dup {
+			continue
+		}
+		out = append(out, r)
+	}
+	return out
 }
 
 // View implements tea.Model.
@@ -300,7 +377,7 @@ func (m *ModelSearchModel) View() string {
 	}
 
 	topStatus := m.status
-	if m.loading {
+	if m.loading || m.loadingMore {
 		topStatus = spinnerFrames[m.spinnerFrame] + " " + topStatus
 	}
 	top := renderTwoSidedBar("HF MODEL EXPLORER", topStatus, w, SearchTopBarStyle)
