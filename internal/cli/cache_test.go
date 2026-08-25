@@ -40,6 +40,31 @@ func TestCacheCmdJSON(t *testing.T) {
 	}
 }
 
+func TestCacheCmdTablePrintsQuantizationsAsTreeChildren(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	repo := filepath.Join(root, "hub", "models--acme--many")
+	createCLIArtifact(t, repo, "abc123", "model-Q4_K_M.gguf", "q4")
+	createCLIArtifact(t, repo, "abc123", "model-Q8_0.gguf", "q8")
+
+	cmd := newCacheCmd(&RootOpts{})
+	var output bytes.Buffer
+	cmd.SetOut(&output)
+	cmd.SetErr(&output)
+	cmd.SetIn(strings.NewReader(""))
+	cmd.SetArgs([]string{"--cache-dir", root})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+
+	text := output.String()
+	for _, want := range []string{"[-] acme/many", "|- model-Q4_K_M.gguf", "|- model-Q8_0.gguf", "1 repositories, 2 artifacts"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("output missing %q:\n%s", want, text)
+		}
+	}
+}
+
 func TestCacheDeleteCmdRequiresConfirmationWhenPiped(t *testing.T) {
 	t.Parallel()
 	root := createCLICachedRepo(t, "models--acme--model", "some model data")
@@ -111,4 +136,26 @@ func createCLICachedRepo(t *testing.T, name, contents string) string {
 		t.Fatal(err)
 	}
 	return root
+}
+
+func createCLIArtifact(t *testing.T, repo, commit, name, contents string) {
+	t.Helper()
+	blob := filepath.Join(repo, "blobs", strings.ReplaceAll(name, ".", "-"))
+	snapshot := filepath.Join(repo, "snapshots", commit, name)
+	if err := os.MkdirAll(filepath.Dir(blob), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(snapshot), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(blob, []byte(contents), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	target, err := filepath.Rel(filepath.Dir(snapshot), blob)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, snapshot); err != nil {
+		t.Fatal(err)
+	}
 }

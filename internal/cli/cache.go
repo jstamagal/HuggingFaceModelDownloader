@@ -52,7 +52,7 @@ Piped output falls back to a deterministic table.`,
 					return err
 				}
 				if result.Removed > 0 {
-					fmt.Fprintf(cmd.OutOrStdout(), "Removed %d repositories; reclaimed %s.\n", result.Removed, humanSize(result.Bytes))
+					fmt.Fprintf(cmd.OutOrStdout(), "Removed %d cache items; reclaimed %s.\n", result.Removed, humanSize(result.Bytes))
 				}
 				return nil
 			}
@@ -65,12 +65,13 @@ Piped output falls back to a deterministic table.`,
 			if err != nil {
 				return err
 			}
+			filtered := filteredCacheInventory(inventory, repos)
 			if ro.JSONOut || format == "json" {
 				enc := json.NewEncoder(cmd.OutOrStdout())
 				enc.SetIndent("", "  ")
-				return enc.Encode(filteredCacheInventory(inventory, repos))
+				return enc.Encode(filtered)
 			}
-			printCacheTable(cmd.OutOrStdout(), repos, inventory.Root)
+			printCacheTable(cmd.OutOrStdout(), &filtered)
 			return nil
 		},
 	}
@@ -93,6 +94,15 @@ func filteredCacheInventory(inventory *hfdownloader.CacheInventory, repos []hfdo
 		result.TotalSize += repo.Size
 		result.IncompleteSize += repo.IncompleteSize
 		result.TotalFiles += repo.FileCount
+	}
+	allowed := make(map[string]bool, len(repos))
+	for _, repo := range repos {
+		allowed[string(repo.Type)+":"+repo.Repo] = true
+	}
+	for _, artifact := range inventory.Artifacts {
+		if allowed[string(artifact.Type)+":"+artifact.Repo] {
+			result.Artifacts = append(result.Artifacts, artifact)
+		}
 	}
 	return result
 }
@@ -247,23 +257,35 @@ func confirmCacheDelete(cmd *cobra.Command, count int, size int64) (bool, error)
 	return answer == "y" || answer == "yes", nil
 }
 
-func printCacheTable(w io.Writer, repos []hfdownloader.CachedRepo, cacheRoot string) {
-	if len(repos) == 0 {
+func printCacheTable(w io.Writer, inventory *hfdownloader.CacheInventory) {
+	if len(inventory.Repos) == 0 {
 		fmt.Fprintln(w, "No cached repositories found.")
-		fmt.Fprintf(w, "Cache directory: %s\n", cacheRoot)
+		fmt.Fprintf(w, "Cache directory: %s\n", inventory.Root)
 		return
 	}
-	fmt.Fprintf(w, "%-8s  %10s  %8s  %-10s  %s\n", "TYPE", "SIZE", "BLOBS", "MODIFIED", "REPOSITORY")
+	artifacts := make(map[string][]hfdownloader.CachedArtifact)
+	for _, artifact := range inventory.Artifacts {
+		key := string(artifact.Type) + ":" + artifact.Repo
+		artifacts[key] = append(artifacts[key], artifact)
+	}
+	fmt.Fprintf(w, "%-8s  %10s  %8s  %-10s  %s\n", "TYPE", "SIZE", "FILES", "MODIFIED", "REPOSITORY / ARTIFACT")
 	fmt.Fprintf(w, "%-8s  %10s  %8s  %-10s  %s\n", "--------", "----------", "--------", "----------", "----------")
 	var total int64
-	for _, repo := range repos {
+	for _, repo := range inventory.Repos {
 		lastUsed := "-"
 		if !repo.LastModified.IsZero() {
 			lastUsed = repo.LastModified.Format("2006-01-02")
 		}
-		fmt.Fprintf(w, "%-8s  %10s  %8d  %-10s  %s\n", repo.Type, humanSize(repo.Size), repo.FileCount, lastUsed, repo.Repo)
+		fmt.Fprintf(w, "%-8s  %10s  %8d  %-10s  [-] %s\n", repo.Type, humanSize(repo.Size), repo.FileCount, lastUsed, repo.Repo)
+		for _, artifact := range artifacts[string(repo.Type)+":"+repo.Repo] {
+			name := artifact.Name
+			if artifact.FileCount > 1 {
+				name += fmt.Sprintf(" (%d shards)", artifact.FileCount)
+			}
+			fmt.Fprintf(w, "%-8s  %10s  %8d  %-10s      |- %s\n", "artifact", humanSize(artifact.Size), artifact.FileCount, "", name)
+		}
 		total += repo.Size
 	}
-	fmt.Fprintf(w, "\n%d repositories, %s total\n", len(repos), humanSize(total))
-	fmt.Fprintf(w, "Cache directory: %s\n", cacheRoot)
+	fmt.Fprintf(w, "\n%d repositories, %d artifacts, %s total\n", len(inventory.Repos), len(inventory.Artifacts), humanSize(total))
+	fmt.Fprintf(w, "Cache directory: %s\n", inventory.Root)
 }

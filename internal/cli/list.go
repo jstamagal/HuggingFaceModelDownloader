@@ -35,18 +35,18 @@ func newListCmd(ro *RootOpts) *cobra.Command {
 	var sortBy string
 	var formatOut string
 	var scan bool
+	var manifestsOnly bool
 
 	cmd := &cobra.Command{
 		Use:   "list",
 		Short: "List downloaded models and datasets in the cache",
 		Long: `List all models and datasets that have been downloaded to the HuggingFace cache.
 
-By default, information is read from hfd.yaml manifest files created during download.
-Use --scan to scan the cache directory structure instead (for repos without manifests).
+By default, the Hub cache is scanned directly, including repositories downloaded
+by hf, huggingface-cli, Python libraries, and hfdownloader.
 
 Examples:
-  hfdownloader list                     # List all repos (from manifests)
-  hfdownloader list --scan              # Scan cache structure (no manifest needed)
+  hfdownloader list                     # List every repo in the Hub cache
   hfdownloader list --type model        # List only models
   hfdownloader list --type dataset      # List only datasets
   hfdownloader list --sort size         # Sort by size (largest first)
@@ -67,10 +67,10 @@ Examples:
 			var entries []ListEntry
 			var err error
 
-			if scan {
-				entries, err = scanCacheStructure(cacheDir, filterType)
-			} else {
+			if manifestsOnly && !scan {
 				entries, err = scanManifests(cacheDir, filterType)
+			} else {
+				entries, err = scanCacheStructure(cacheDir, filterType)
 			}
 			if err != nil {
 				return err
@@ -90,113 +90,69 @@ Examples:
 			if len(entries) == 0 {
 				fmt.Println("No downloaded repos found.")
 				fmt.Printf("Cache directory: %s\n", cacheDir)
-				if !scan {
-					fmt.Println("\nNote: Only repos with hfd.yaml manifests are listed.")
-					fmt.Println("Use --scan to scan cache structure (for repos downloaded by other tools).")
-				}
 				return nil
 			}
 
 			printTable(entries)
 			fmt.Printf("\nTotal: %d repos\n", len(entries))
-			if !scan {
-				fmt.Println("(Use --scan to include repos without manifests)")
-			}
 			return nil
 		},
 	}
 
 	cmd.Flags().StringVar(&cacheDir, "cache-dir", "", "HuggingFace cache directory (default: ~/.cache/huggingface or HF_HOME)")
-	cmd.Flags().StringVar(&filterType, "type", "", "Filter by type: model, dataset")
+	cmd.Flags().StringVar(&filterType, "type", "", "Filter by type: model, dataset, space")
 	cmd.Flags().StringVar(&sortBy, "sort", "name", "Sort by: name, size, date")
 	cmd.Flags().StringVar(&formatOut, "format", "table", "Output format: table, json")
-	cmd.Flags().BoolVar(&scan, "scan", false, "Scan cache structure instead of reading manifests")
+	cmd.Flags().BoolVar(&scan, "scan", false, "Scan cache structure (retained for compatibility; now the default)")
+	cmd.Flags().BoolVar(&manifestsOnly, "manifests-only", false, "Only list repositories with hfdownloader manifests")
 
 	return cmd
 }
 
 // scanCacheStructure scans hub/ directory structure directly (for repos without manifests)
 func scanCacheStructure(cacheDir, filterType string) ([]ListEntry, error) {
-	var entries []ListEntry
-
-	hubDir := filepath.Join(cacheDir, "hub")
-	if _, err := os.Stat(hubDir); os.IsNotExist(err) {
-		return entries, nil
-	}
-
-	items, err := os.ReadDir(hubDir)
+	cache := hfdownloader.NewHFCache(cacheDir, hfdownloader.DefaultStaleTimeout)
+	inventory, err := cache.Scan()
 	if err != nil {
 		return nil, err
 	}
-
-	for _, item := range items {
-		if !item.IsDir() {
+	entries := make([]ListEntry, 0, len(inventory.Repos))
+	for _, cached := range inventory.Repos {
+		repoType := string(cached.Type)
+		if filterType != "" && !strings.EqualFold(repoType, filterType) {
 			continue
 		}
-
-		name := item.Name()
-		var repoType string
-		var repoName string
-
-		if strings.HasPrefix(name, "models--") {
-			repoType = "model"
-			repoName = strings.TrimPrefix(name, "models--")
-		} else if strings.HasPrefix(name, "datasets--") {
-			repoType = "dataset"
-			repoName = strings.TrimPrefix(name, "datasets--")
-		} else {
-			continue
+		branch, commit := cachedRepoRevision(cached.Path)
+		downloaded := ""
+		if !cached.LastModified.IsZero() {
+			downloaded = cached.LastModified.Format("2006-01-02")
 		}
-
-		// Filter by type if specified
-		if filterType != "" && repoType != filterType {
-			continue
-		}
-
-		// Convert owner--repo to owner/repo
-		repoName = strings.Replace(repoName, "--", "/", 1)
-
-		// Get size by walking blobs directory
-		blobsDir := filepath.Join(hubDir, name, "blobs")
-		var totalSize int64
-		var fileCount int
-		filepath.Walk(blobsDir, func(path string, info os.FileInfo, err error) error {
-			if err == nil && !info.IsDir() {
-				totalSize += info.Size()
-				fileCount++
-			}
-			return nil
-		})
-
-		// Try to read commit from refs/main
-		var commit string
-		refPath := filepath.Join(hubDir, name, "refs", "main")
-		if data, err := os.ReadFile(refPath); err == nil {
-			commit = strings.TrimSpace(string(data))
-		}
-
-		// Get modification time
-		info, _ := item.Info()
-		var downloaded string
-		if info != nil {
-			downloaded = info.ModTime().Format("2006-01-02")
-		}
-
 		entry := ListEntry{
 			Type:       repoType,
-			Repo:       repoName,
-			Branch:     "main",
+			Repo:       cached.Repo,
+			Branch:     branch,
 			Commit:     shortCommit(commit),
-			Files:      fileCount,
-			Size:       totalSize,
-			SizeHuman:  humanSize(totalSize),
+			Files:      cached.FileCount,
+			Size:       cached.Size,
+			SizeHuman:  humanSize(cached.Size),
 			Downloaded: downloaded,
-			Path:       filepath.Join(hubDir, name),
+			Path:       cached.Path,
 		}
 		entries = append(entries, entry)
 	}
-
 	return entries, nil
+}
+
+func cachedRepoRevision(repoPath string) (branch, commit string) {
+	branch = "main"
+	if data, err := os.ReadFile(filepath.Join(repoPath, "refs", branch)); err == nil {
+		return branch, strings.TrimSpace(string(data))
+	}
+	snapshots, err := os.ReadDir(filepath.Join(repoPath, "snapshots"))
+	if err == nil && len(snapshots) == 1 && snapshots[0].IsDir() {
+		return branch, snapshots[0].Name()
+	}
+	return branch, ""
 }
 
 func scanManifests(cacheDir, filterType string) ([]ListEntry, error) {

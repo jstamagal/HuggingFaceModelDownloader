@@ -332,7 +332,7 @@ files:
 # List everything you've downloaded
 hfdownloader list
 
-# Browse the cache interactively and delete what you no longer need
+# Browse a repo/artifact tree; delete whole repos or individual quants
 hfdownloader cache
 
 # Get details about a specific download

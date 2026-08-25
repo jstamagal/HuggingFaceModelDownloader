@@ -17,19 +17,19 @@ import (
 
 // RepoInfo represents detailed info about a downloaded repo.
 type RepoInfo struct {
-	Type         string         `json:"type"`
-	Repo         string         `json:"repo"`
-	Branch       string         `json:"branch"`
-	Commit       string         `json:"commit"`
-	TotalFiles   int            `json:"total_files"`
-	TotalSize    int64          `json:"total_size"`
-	TotalSizeHuman string       `json:"total_size_human"`
-	StartedAt    string         `json:"started_at"`
-	CompletedAt  string         `json:"completed_at"`
-	Command      string         `json:"command"`
-	FriendlyPath string         `json:"friendly_path"`
-	CachePath    string         `json:"cache_path"`
-	Files        []RepoFileInfo `json:"files"`
+	Type           string         `json:"type"`
+	Repo           string         `json:"repo"`
+	Branch         string         `json:"branch"`
+	Commit         string         `json:"commit"`
+	TotalFiles     int            `json:"total_files"`
+	TotalSize      int64          `json:"total_size"`
+	TotalSizeHuman string         `json:"total_size_human"`
+	StartedAt      string         `json:"started_at"`
+	CompletedAt    string         `json:"completed_at"`
+	Command        string         `json:"command"`
+	FriendlyPath   string         `json:"friendly_path"`
+	CachePath      string         `json:"cache_path"`
+	Files          []RepoFileInfo `json:"files"`
 }
 
 // RepoFileInfo represents a file in the repo.
@@ -132,7 +132,7 @@ func findRepoInfo(cacheDir, query string) (*RepoInfo, error) {
 	}
 
 	if len(matches) == 0 {
-		return nil, fmt.Errorf("no repo matching %q found in cache", query)
+		return findRepoInfoWithoutManifest(cacheDir, query)
 	}
 	if len(matches) > 1 {
 		var names []string
@@ -176,6 +176,92 @@ func findRepoInfo(cacheDir, query string) (*RepoInfo, error) {
 		CachePath:      cachePath,
 		Files:          files,
 	}, nil
+}
+
+func findRepoInfoWithoutManifest(cacheDir, query string) (*RepoInfo, error) {
+	query = strings.TrimSpace(query)
+	if ref, err := hfdownloader.ParseRepoRef(query); err == nil {
+		query = ref.Repo
+	}
+	cache := hfdownloader.NewHFCache(cacheDir, hfdownloader.DefaultStaleTimeout)
+	inventory, err := cache.Scan()
+	if err != nil {
+		return nil, err
+	}
+	var matches []hfdownloader.CachedRepo
+	for _, cached := range inventory.Repos {
+		if matchesRepo(cached.Repo, query) {
+			matches = append(matches, cached)
+		}
+	}
+	if len(matches) == 0 {
+		return nil, fmt.Errorf("no repo matching %q found in cache", query)
+	}
+	if len(matches) > 1 {
+		names := make([]string, 0, len(matches))
+		for _, cached := range matches {
+			names = append(names, string(cached.Type)+":"+cached.Repo)
+		}
+		return nil, fmt.Errorf("multiple repos match %q: %s\nPlease specify the full repo name", query, strings.Join(names, ", "))
+	}
+
+	cached := matches[0]
+	branch, commit := cachedRepoRevision(cached.Path)
+	files := cachedSnapshotFiles(cached.Path, commit)
+	friendlyPath := cached.FriendlyPath
+	if _, err := os.Stat(friendlyPath); err != nil {
+		friendlyPath = ""
+	}
+	completed := ""
+	if !cached.LastModified.IsZero() {
+		completed = cached.LastModified.Format("2006-01-02 15:04:05")
+	}
+	return &RepoInfo{
+		Type:           string(cached.Type),
+		Repo:           cached.Repo,
+		Branch:         branch,
+		Commit:         commit,
+		TotalFiles:     cached.FileCount,
+		TotalSize:      cached.Size,
+		TotalSizeHuman: humanSize(cached.Size),
+		CompletedAt:    completed,
+		FriendlyPath:   friendlyPath,
+		CachePath:      cached.Path,
+		Files:          files,
+	}, nil
+}
+
+func cachedSnapshotFiles(repoPath, commit string) []RepoFileInfo {
+	if commit == "" {
+		return nil
+	}
+	root := filepath.Join(repoPath, "snapshots", commit)
+	var files []RepoFileInfo
+	_ = filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() {
+			return nil
+		}
+		fileInfo := info
+		if followed, statErr := os.Stat(path); statErr == nil {
+			fileInfo = followed
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return nil
+		}
+		resolved, err := filepath.EvalSymlinks(path)
+		if err != nil {
+			resolved = path
+		}
+		files = append(files, RepoFileInfo{
+			Name:      filepath.ToSlash(rel),
+			Size:      fileInfo.Size(),
+			SizeHuman: humanSize(fileInfo.Size()),
+			BlobPath:  resolved,
+		})
+		return nil
+	})
+	return files
 }
 
 func matchesRepo(repo, query string) bool {

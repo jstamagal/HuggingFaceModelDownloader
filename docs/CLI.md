@@ -418,7 +418,8 @@ Transformers Analysis:
 
 ### list
 
-List downloaded models and datasets.
+List models, datasets, and Spaces found directly in the standard Hub cache,
+including downloads created by `hf`, `huggingface-cli`, and Python libraries.
 
 ```
 hfdownloader list [flags]
@@ -429,10 +430,11 @@ hfdownloader list [flags]
 | Flag | Short | Type | Default | Description |
 |------|-------|------|---------|-------------|
 | `--cache-dir` | | string | `~/.cache/huggingface` | Cache directory |
-| `--type` | | string | | Filter: model, dataset |
+| `--type` | | string | | Filter: model, dataset, space |
 | `--sort` | | string | `name` | Sort: name, size, date |
 | `--format` | | string | `table` | Output: table, json |
-| `--scan` | | bool | `false` | Scan structure (not manifests) |
+| `--scan` | | bool | `false` | Compatibility flag; direct scanning is now the default |
+| `--manifests-only` | | bool | `false` | Only show repositories with hfdownloader manifests |
 
 #### Examples
 
@@ -449,8 +451,8 @@ hfdownloader list --sort size
 # JSON output
 hfdownloader list --format json
 
-# Scan cache structure
-hfdownloader list --scan
+# Restrict output to hfdownloader-managed downloads
+hfdownloader list --manifests-only
 ```
 
 #### Sample Output
@@ -471,10 +473,15 @@ Total: 3 repositories (20.4 GiB)
 ### cache
 
 Browse models, datasets, and Spaces in the local Hugging Face Hub cache and
-remove repositories you no longer need. On a terminal, the command opens an
-interactive browser. Use the arrow keys or `j`/`k` to move, `space` to select,
-`/` to search, `t` to filter by type, `s` to change sorting, and `d` to delete.
-Deletion always requires a second confirmation.
+remove data you no longer need. The interactive browser is a tree: repository
+rows are parents and independently removable GGUF, safetensors, ONNX, and other
+model payloads are children. Numbered shards are grouped as one artifact.
+Select a repository row to delete everything beneath it, or select individual
+artifact/quant rows to keep the rest of the repository.
+
+Use the arrow keys or `j`/`k` to move, left/right or `h`/`l` to collapse and
+expand, `space` to select, `/` to search, `t` to filter by type, `s` to change
+sorting, and `d` to delete. Deletion always requires a second confirmation.
 Passing an output/filter flag switches the command to non-interactive output,
 which makes it easy to use in scripts.
 
@@ -515,6 +522,9 @@ hfdownloader cache delete model:TheBloke/Mistral-7B-GGUF --yes
 ### info
 
 Show detailed information about a downloaded repository.
+
+Information is read from the standard Hub cache when no hfdownloader manifest
+exists, so repositories downloaded by the official `hf` command are supported.
 
 ```
 hfdownloader info <repo> [flags]

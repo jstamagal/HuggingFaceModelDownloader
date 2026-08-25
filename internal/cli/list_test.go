@@ -186,6 +186,25 @@ func TestScanCacheStructure(t *testing.T) {
 		}
 	})
 
+	t.Run("includes spaces downloaded by other tools", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		blobs := filepath.Join(tmpDir, "hub", "spaces--owner--demo", "blobs")
+		if err := os.MkdirAll(blobs, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(blobs, "abc"), []byte("space"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		entries, err := scanCacheStructure(tmpDir, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(entries) != 1 || entries[0].Type != "space" || entries[0].Repo != "owner/demo" {
+			t.Fatalf("entries = %+v", entries)
+		}
+	})
+
 	t.Run("filter by type", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		hubDir := filepath.Join(tmpDir, "hub")
@@ -330,7 +349,7 @@ func TestNewListCmd(t *testing.T) {
 		ro := &RootOpts{}
 		cmd := newListCmd(ro)
 
-		flags := []string{"cache-dir", "type", "sort", "format", "scan"}
+		flags := []string{"cache-dir", "type", "sort", "format", "scan", "manifests-only"}
 		for _, name := range flags {
 			if cmd.Flags().Lookup(name) == nil {
 				t.Errorf("flag %q should exist", name)

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -35,6 +36,147 @@ func TestHFCache_Scan(t *testing.T) {
 	}
 	if got.Repos[2].Type != RepoTypeSpace {
 		t.Errorf("space type = %q", got.Repos[2].Type)
+	}
+}
+
+func TestHFCache_ScanGroupsArtifactsWithinRepository(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	cache := NewHFCache(root, time.Minute)
+	repo := filepath.Join(root, "hub", "models--acme--many")
+	createSnapshotArtifact(t, repo, "abc123", "model-Q4_K_M.gguf", "q4")
+	createSnapshotArtifact(t, repo, "abc123", "model-Q8_0.gguf", "q8")
+	createSnapshotArtifact(t, repo, "abc123", "Q6/model-00001-of-00002.gguf", "part1")
+	createSnapshotArtifact(t, repo, "abc123", "Q6/model-00002-of-00002.gguf", "part2")
+
+	inventory, err := cache.Scan()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(inventory.Repos) != 1 {
+		t.Fatalf("repos = %d", len(inventory.Repos))
+	}
+	if len(inventory.Artifacts) != 3 {
+		t.Fatalf("artifacts = %+v", inventory.Artifacts)
+	}
+	var sharded *CachedArtifact
+	for i := range inventory.Artifacts {
+		if inventory.Artifacts[i].Name == "Q6/model.gguf" {
+			sharded = &inventory.Artifacts[i]
+		}
+	}
+	if sharded == nil || sharded.FileCount != 2 || sharded.Size != int64(len("part1")+len("part2")) {
+		t.Fatalf("sharded artifact = %+v", sharded)
+	}
+}
+
+func TestHFCache_ScanCountsRegularFilesStoredInSnapshot(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	cache := NewHFCache(root, time.Minute)
+	path := filepath.Join(root, "hub", "models--acme--direct", "snapshots", "abc123", "model-Q4_0.gguf")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("direct-data"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	inventory, err := cache.Scan()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(inventory.Repos) != 1 || inventory.Repos[0].Size != int64(len("direct-data")) {
+		t.Fatalf("repos = %+v", inventory.Repos)
+	}
+	if len(inventory.Artifacts) != 1 || inventory.Artifacts[0].Size != inventory.Repos[0].Size {
+		t.Fatalf("artifacts = %+v", inventory.Artifacts)
+	}
+}
+
+func TestHFCache_DeleteCachedArtifactLeavesSiblingQuant(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	cache := NewHFCache(root, time.Minute)
+	repo := filepath.Join(root, "hub", "models--acme--many")
+	createSnapshotArtifact(t, repo, "abc123", "model-Q4_K_M.gguf", "q4-data")
+	createSnapshotArtifact(t, repo, "abc123", "model-Q8_0.gguf", "q8-data")
+
+	inventory, err := cache.Scan()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var q4 CachedArtifact
+	for _, artifact := range inventory.Artifacts {
+		if artifact.Name == "model-Q4_K_M.gguf" {
+			q4 = artifact
+		}
+	}
+	result, err := cache.DeleteCachedArtifact(q4, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.BytesRemoved != int64(len("q4-data")) {
+		t.Fatalf("removed = %d", result.BytesRemoved)
+	}
+	after, err := cache.Scan()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after.Repos) != 1 || len(after.Artifacts) != 1 || after.Artifacts[0].Name != "model-Q8_0.gguf" {
+		t.Fatalf("after delete = repos:%+v artifacts:%+v", after.Repos, after.Artifacts)
+	}
+}
+
+func TestHFCache_DeleteCachedArtifactKeepsBlobUsedByAnotherSnapshot(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	cache := NewHFCache(root, time.Minute)
+	repo := filepath.Join(root, "hub", "models--acme--shared")
+	blob := filepath.Join(repo, "blobs", "shared-blob")
+	if err := os.MkdirAll(filepath.Dir(blob), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(blob, []byte("shared-data"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, commit := range []string{"abc123", "def456"} {
+		snapshot := filepath.Join(repo, "snapshots", commit, "model-Q4_K_M.gguf")
+		if err := os.MkdirAll(filepath.Dir(snapshot), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		target, err := filepath.Rel(filepath.Dir(snapshot), blob)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(target, snapshot); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	inventory, err := cache.Scan()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(inventory.Artifacts) != 2 {
+		t.Fatalf("artifacts = %+v", inventory.Artifacts)
+	}
+	result, err := cache.DeleteCachedArtifact(inventory.Artifacts[0], false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.BytesRemoved != 0 {
+		t.Fatalf("removed shared bytes = %d, want 0", result.BytesRemoved)
+	}
+	if _, err := os.Stat(blob); err != nil {
+		t.Fatalf("shared blob was removed: %v", err)
+	}
+	after, err := cache.Scan()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after.Artifacts) != 1 {
+		t.Fatalf("remaining artifacts = %+v", after.Artifacts)
 	}
 }
 
@@ -166,6 +308,29 @@ func createCachedRepo(t *testing.T, root, dirName, contents string) {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(dir, "blobs", "blob"), []byte(contents), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func createSnapshotArtifact(t *testing.T, repo, commit, rel, contents string) {
+	t.Helper()
+	blobName := strings.NewReplacer("/", "-", ".", "-").Replace(rel)
+	blob := filepath.Join(repo, "blobs", blobName)
+	snapshot := filepath.Join(repo, "snapshots", commit, filepath.FromSlash(rel))
+	if err := os.MkdirAll(filepath.Dir(blob), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(snapshot), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(blob, []byte(contents), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	target, err := filepath.Rel(filepath.Dir(snapshot), blob)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, snapshot); err != nil {
 		t.Fatal(err)
 	}
 }

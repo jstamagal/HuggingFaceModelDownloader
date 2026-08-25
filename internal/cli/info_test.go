@@ -192,6 +192,45 @@ func TestFindRepoInfo(t *testing.T) {
 			t.Error("expected error for multiple matches")
 		}
 	})
+
+	t.Run("finds standard hub cache without manifest", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		repoDir := filepath.Join(tmpDir, "hub", "models--LuffyTheFox--Hermes-GGUF")
+		blob := filepath.Join(repoDir, "blobs", "deadbeef")
+		snapshot := filepath.Join(repoDir, "snapshots", "abc123")
+		if err := os.MkdirAll(filepath.Dir(blob), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(snapshot, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(filepath.Join(repoDir, "refs"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(blob, []byte("gguf-data"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink("../../blobs/deadbeef", filepath.Join(snapshot, "model.gguf")); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(repoDir, "refs", "main"), []byte("abc123"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		info, err := findRepoInfo(tmpDir, "hf://LuffyTheFox/Hermes-GGUF/model.gguf")
+		if err != nil {
+			t.Fatalf("findRepoInfo() error = %v", err)
+		}
+		if info.Repo != "LuffyTheFox/Hermes-GGUF" || info.Commit != "abc123" {
+			t.Fatalf("info = %+v", info)
+		}
+		if info.TotalSize != int64(len("gguf-data")) || len(info.Files) != 1 {
+			t.Fatalf("size/files = %d/%d", info.TotalSize, len(info.Files))
+		}
+		if info.Files[0].Name != "model.gguf" || info.Files[0].BlobPath != blob {
+			t.Fatalf("file = %+v", info.Files[0])
+		}
+	})
 }
 
 func TestNewInfoCmd(t *testing.T) {
