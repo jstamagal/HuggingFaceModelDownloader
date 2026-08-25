@@ -4,39 +4,24 @@
 package tui
 
 import (
+	"image/color"
+	"os"
+	"strconv"
 	"strings"
 
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/lipgloss/v2"
 )
 
-// Color palette.
-//
-// Every color is a lipgloss.AdaptiveColor with a variant for light and dark
-// terminal backgrounds. lipgloss detects the background (termenv OSC 11 /
-// COLORFGBG) at first render; SetTheme provides a manual override for
-// terminals where detection fails. No style ever paints a full-screen
-// background — the terminal's own background shows through, which is the only
-// scheme that stays readable in both black-on-white and white-on-black
-// setups.
+// Color palette and component styles. Charm v2 makes light/dark selection
+// explicit, so SetTheme rebuilds these values before a TUI starts.
 var (
-	ColorPrimary   = lipgloss.AdaptiveColor{Light: "31", Dark: "86"}   // teal / cyan
-	ColorSecondary = lipgloss.AdaptiveColor{Light: "55", Dark: "99"}   // purple
-	ColorSuccess   = lipgloss.AdaptiveColor{Light: "28", Dark: "82"}   // green
-	ColorWarning   = lipgloss.AdaptiveColor{Light: "130", Dark: "214"} // orange
-	ColorError     = lipgloss.AdaptiveColor{Light: "124", Dark: "196"} // red
-	ColorMuted     = lipgloss.AdaptiveColor{Light: "244", Dark: "245"} // gray
-	ColorHighlight = lipgloss.AdaptiveColor{Light: "94", Dark: "229"}  // yellow/gold
-
-	ColorBorder      = lipgloss.AdaptiveColor{Light: "250", Dark: "238"}
-	ColorBorderFocus = lipgloss.AdaptiveColor{Light: "31", Dark: "86"}
-
-	// Explicit foreground/background pairs (safe on any terminal because both
-	// sides are specified).
-	colorBarBg      = lipgloss.AdaptiveColor{Light: "24", Dark: "24"} // deep blue
-	colorBarFg      = lipgloss.AdaptiveColor{Light: "231", Dark: "231"}
-	colorSubtleBg   = lipgloss.AdaptiveColor{Light: "253", Dark: "236"}
-	colorSubtleFg   = lipgloss.AdaptiveColor{Light: "238", Dark: "250"}
-	colorSelectedFg = lipgloss.AdaptiveColor{Light: "231", Dark: "16"}
+	ColorPrimary, ColorSecondary, ColorSuccess    color.Color
+	ColorWarning, ColorError, ColorMuted          color.Color
+	ColorHighlight, ColorBorder, ColorBorderFocus color.Color
+	colorBarBg, colorBarFg, colorSubtleBg         color.Color
+	colorSubtleFg, colorSelectedFg                color.Color
+	themeIsDark                                   = true
+	themeForced                                   bool
 )
 
 // SetTheme overrides background detection: "light", "dark", or "auto"
@@ -44,178 +29,228 @@ var (
 func SetTheme(theme string) {
 	switch strings.ToLower(strings.TrimSpace(theme)) {
 	case "light":
-		lipgloss.SetHasDarkBackground(false)
+		themeForced = true
+		setStyles(false)
 	case "dark":
-		lipgloss.SetHasDarkBackground(true)
+		themeForced = true
+		setStyles(true)
+	default:
+		themeForced = false
+		// OSC 11 background-color replies are frequently swallowed by SSH
+		// relays and terminal multiplexers. COLORFGBG, when present, gives us a
+		// reliable initial theme; Bubble Tea can still refine it after startup.
+		if isDark, ok := colorFGBGTheme(os.Getenv("COLORFGBG")); ok {
+			setStyles(isDark)
+		} else {
+			setStyles(true)
+		}
 	}
 }
 
-// Selector styles
+// colorFGBGTheme interprets the final palette index as the terminal's
+// background. Common values include "15;0" (dark) and "0;15" (light).
+func colorFGBGTheme(value string) (isDark, ok bool) {
+	parts := strings.Split(value, ";")
+	if len(parts) == 0 {
+		return false, false
+	}
+	background, err := strconv.Atoi(strings.TrimSpace(parts[len(parts)-1]))
+	if err != nil || background < 0 || background > 15 {
+		return false, false
+	}
+
+	// ANSI black through cyan, plus bright black, are conventionally dark.
+	return background <= 6 || background == 8, true
+}
+
+// setBackgroundTheme applies a Bubble Tea background-color response unless a
+// user explicitly selected --theme light or --theme dark.
+func setBackgroundTheme(isDark bool) {
+	if !themeForced && themeIsDark != isDark {
+		setStyles(isDark)
+	}
+}
+
+// Selector and browser styles.
 var (
-	// Header styles
+	TitleStyle, SubtitleStyle, HeaderInfoStyle                         lipgloss.Style
+	ItemStyle, SelectedItemStyle, CursorStyle                          lipgloss.Style
+	CheckboxChecked, CheckboxUnchecked                                 lipgloss.Style
+	StarFilled, StarEmpty, RecommendedBadge                            lipgloss.Style
+	SizeLabelStyle, RAMLabelStyle, DescriptionStyle                    lipgloss.Style
+	CategoryStyle, FooterStyle, FooterKeyStyle, FooterDescStyle        lipgloss.Style
+	CommandBoxStyle, CommandLabelStyle, CommandTextStyle               lipgloss.Style
+	SummaryStyle, SummaryLabelStyle, SummaryValueStyle                 lipgloss.Style
+	BoxStyle, StatusBarStyle, HelpStyle, HelpKeyStyle                  lipgloss.Style
+	ErrorStyle, SuccessStyle                                           lipgloss.Style
+	SearchScreenStyle, SearchBackgroundStyle                           lipgloss.Style
+	SearchTopBarStyle, SearchBottomBarStyle, SearchHeavySeparatorStyle lipgloss.Style
+	SearchPanelStyle, SearchFocusedPanelStyle, SearchPanelTitleStyle   lipgloss.Style
+	SearchSelectedStyle, SearchResultIDStyle, SearchMutedStyle         lipgloss.Style
+	SearchAccentStyle, SearchInputPromptStyle, SearchInputTextStyle    lipgloss.Style
+	SearchFilterKeyStyle, SearchFilterValueStyle                       lipgloss.Style
+	SearchDetailLabelStyle, SearchDetailValueStyle, SearchHelpKeyStyle lipgloss.Style
+	SearchErrorStyle                                                   lipgloss.Style
+)
+
+func init() { setStyles(true) }
+
+func setStyles(isDark bool) {
+	themeIsDark = isDark
+	pick := lipgloss.LightDark(isDark)
+	ColorPrimary = pick(lipgloss.Color("31"), lipgloss.Color("86"))
+	ColorSecondary = pick(lipgloss.Color("55"), lipgloss.Color("99"))
+	ColorSuccess = pick(lipgloss.Color("28"), lipgloss.Color("82"))
+	ColorWarning = pick(lipgloss.Color("130"), lipgloss.Color("214"))
+	ColorError = pick(lipgloss.Color("124"), lipgloss.Color("196"))
+	ColorMuted = pick(lipgloss.Color("244"), lipgloss.Color("245"))
+	ColorHighlight = pick(lipgloss.Color("94"), lipgloss.Color("229"))
+	ColorBorder = pick(lipgloss.Color("250"), lipgloss.Color("238"))
+	ColorBorderFocus = pick(lipgloss.Color("31"), lipgloss.Color("86"))
+	colorBarBg = lipgloss.Color("24")
+	colorBarFg = lipgloss.Color("231")
+	colorSubtleBg = pick(lipgloss.Color("253"), lipgloss.Color("236"))
+	colorSubtleFg = pick(lipgloss.Color("238"), lipgloss.Color("250"))
+	colorSelectedFg = pick(lipgloss.Color("231"), lipgloss.Color("16"))
+
 	TitleStyle = lipgloss.NewStyle().
-			Bold(true).
-			Foreground(ColorPrimary).
-			MarginBottom(1)
+		Bold(true).
+		Foreground(ColorPrimary).
+		MarginBottom(1)
 
-	SubtitleStyle = lipgloss.NewStyle().
-			Foreground(ColorMuted)
-
-	HeaderInfoStyle = lipgloss.NewStyle().
-			Foreground(ColorSecondary)
-
-	// Item styles
-	ItemStyle = lipgloss.NewStyle().
-			PaddingLeft(2)
-
+	SubtitleStyle = lipgloss.NewStyle().Foreground(ColorMuted)
+	HeaderInfoStyle = lipgloss.NewStyle().Foreground(ColorSecondary)
+	ItemStyle = lipgloss.NewStyle().PaddingLeft(2)
 	SelectedItemStyle = lipgloss.NewStyle().
-				PaddingLeft(2).
-				Foreground(ColorSuccess)
-
+		PaddingLeft(2).
+		Foreground(ColorSuccess)
 	CursorStyle = lipgloss.NewStyle().
-			Foreground(ColorPrimary).
-			Bold(true)
-
-	// Checkbox styles
-	CheckboxChecked   = lipgloss.NewStyle().Foreground(ColorSuccess).SetString("[x]")
+		Foreground(ColorPrimary).
+		Bold(true)
+	CheckboxChecked = lipgloss.NewStyle().Foreground(ColorSuccess).SetString("[x]")
 	CheckboxUnchecked = lipgloss.NewStyle().Foreground(ColorMuted).SetString("[ ]")
-
-	// Quality stars
 	StarFilled = lipgloss.NewStyle().Foreground(ColorWarning).SetString("★")
-	StarEmpty  = lipgloss.NewStyle().Foreground(ColorMuted).SetString("☆")
-
-	// Labels
+	StarEmpty = lipgloss.NewStyle().Foreground(ColorMuted).SetString("☆")
 	RecommendedBadge = lipgloss.NewStyle().
-				Foreground(colorSelectedFg).
-				Background(ColorSuccess).
-				Padding(0, 1).
-				SetString("recommended")
+		Foreground(colorSelectedFg).
+		Background(ColorSuccess).
+		Padding(0, 1).
+		SetString("recommended")
 
 	SizeLabelStyle = lipgloss.NewStyle().
-			Foreground(ColorMuted).
-			Width(10).
-			Align(lipgloss.Right)
+		Foreground(ColorMuted).
+		Width(10).
+		Align(lipgloss.Right)
 
 	RAMLabelStyle = lipgloss.NewStyle().
-			Foreground(ColorMuted).
-			Width(12)
+		Foreground(ColorMuted).
+		Width(12)
 
 	DescriptionStyle = lipgloss.NewStyle().
-				Foreground(ColorMuted).
-				Italic(true)
+		Foreground(ColorMuted).
+		Italic(true)
 
-	// Category header
 	CategoryStyle = lipgloss.NewStyle().
-			Bold(true).
-			Foreground(ColorSecondary).
-			MarginTop(1).
-			MarginBottom(0)
+		Bold(true).
+		Foreground(ColorSecondary).
+		MarginTop(1).
+		MarginBottom(0)
 
-	// Footer styles
 	FooterStyle = lipgloss.NewStyle().
-			Foreground(ColorMuted).
-			MarginTop(1)
+		Foreground(ColorMuted).
+		MarginTop(1)
 
 	FooterKeyStyle = lipgloss.NewStyle().
-			Foreground(ColorPrimary).
-			Bold(true)
+		Foreground(ColorPrimary).
+		Bold(true)
 
 	FooterDescStyle = lipgloss.NewStyle().
-			Foreground(ColorMuted)
+		Foreground(ColorMuted)
 
-	// Command box
 	CommandBoxStyle = lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(ColorBorder).
-			Padding(0, 1).
-			MarginTop(1)
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(ColorBorder).
+		Padding(0, 1).
+		MarginTop(1)
 
 	CommandLabelStyle = lipgloss.NewStyle().
-				Foreground(ColorMuted).
-				Bold(true)
+		Foreground(ColorMuted).
+		Bold(true)
 
 	CommandTextStyle = lipgloss.NewStyle().
-				Foreground(ColorHighlight)
+		Foreground(ColorHighlight)
 
-	// Summary styles
 	SummaryStyle = lipgloss.NewStyle().
-			MarginTop(1).
-			Padding(0, 1)
+		MarginTop(1).
+		Padding(0, 1)
 
 	SummaryLabelStyle = lipgloss.NewStyle().
-				Foreground(ColorMuted)
+		Foreground(ColorMuted)
 
 	SummaryValueStyle = lipgloss.NewStyle().
-				Foreground(ColorPrimary).
-				Bold(true)
+		Foreground(ColorPrimary).
+		Bold(true)
 
-	// Border box for main content
 	BoxStyle = lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(ColorBorder).
-			Padding(1, 2)
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(ColorBorder).
+		Padding(1, 2)
 
-	// Status bar
 	StatusBarStyle = lipgloss.NewStyle().
-			Foreground(colorSubtleFg).
-			Background(colorSubtleBg).
-			Padding(0, 1)
+		Foreground(colorSubtleFg).
+		Background(colorSubtleBg).
+		Padding(0, 1)
 
-	// Help keys
 	HelpStyle = lipgloss.NewStyle().
-			Foreground(ColorMuted)
+		Foreground(ColorMuted)
 
 	HelpKeyStyle = lipgloss.NewStyle().
-			Foreground(ColorPrimary)
+		Foreground(ColorPrimary)
 
-	// Error style
 	ErrorStyle = lipgloss.NewStyle().
-			Foreground(ColorError).
-			Bold(true)
+		Foreground(ColorError).
+		Bold(true)
 
-	// Success style
 	SuccessStyle = lipgloss.NewStyle().
-			Foreground(ColorSuccess).
-			Bold(true)
+		Foreground(ColorSuccess).
+		Bold(true)
 
-	// Search browser styles. Bars use explicit fg+bg pairs; panels and text
-	// inherit the terminal background and use adaptive foregrounds.
 	SearchScreenStyle = lipgloss.NewStyle()
 
 	SearchBackgroundStyle = lipgloss.NewStyle()
 
 	SearchTopBarStyle = lipgloss.NewStyle().
-				Bold(true).
-				Foreground(colorBarFg).
-				Background(colorBarBg)
+		Bold(true).
+		Foreground(colorBarFg).
+		Background(colorBarBg)
 
 	SearchBottomBarStyle = lipgloss.NewStyle().
-				Foreground(colorSubtleFg).
-				Background(colorSubtleBg)
+		Foreground(colorSubtleFg).
+		Background(colorSubtleBg)
 
 	SearchHeavySeparatorStyle = lipgloss.NewStyle().Foreground(ColorBorder)
-	SearchPanelStyle          = lipgloss.NewStyle().
-					Border(lipgloss.RoundedBorder()).
-					BorderForeground(ColorBorder).
-					Padding(0, 1)
+	SearchPanelStyle = lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(ColorBorder).
+		Padding(0, 1)
 	SearchFocusedPanelStyle = SearchPanelStyle.BorderForeground(ColorBorderFocus)
-	SearchPanelTitleStyle   = lipgloss.NewStyle().Bold(true).Foreground(ColorSecondary)
-	SearchSelectedStyle     = lipgloss.NewStyle().
-				Bold(true).
-				Foreground(colorSelectedFg).
-				Background(ColorPrimary)
-	SearchResultIDStyle    = lipgloss.NewStyle()
-	SearchMutedStyle       = lipgloss.NewStyle().Foreground(ColorMuted)
-	SearchAccentStyle      = lipgloss.NewStyle().Bold(true).Foreground(ColorPrimary)
+	SearchPanelTitleStyle = lipgloss.NewStyle().Bold(true).Foreground(ColorSecondary)
+	SearchSelectedStyle = lipgloss.NewStyle().
+		Bold(true).
+		Foreground(colorSelectedFg).
+		Background(ColorPrimary)
+	SearchResultIDStyle = lipgloss.NewStyle()
+	SearchMutedStyle = lipgloss.NewStyle().Foreground(ColorMuted)
+	SearchAccentStyle = lipgloss.NewStyle().Bold(true).Foreground(ColorPrimary)
 	SearchInputPromptStyle = lipgloss.NewStyle().Bold(true).Foreground(ColorSecondary)
-	SearchInputTextStyle   = lipgloss.NewStyle().Foreground(ColorHighlight)
-	SearchFilterKeyStyle   = lipgloss.NewStyle().Bold(true).Foreground(ColorSecondary)
+	SearchInputTextStyle = lipgloss.NewStyle().Foreground(ColorHighlight)
+	SearchFilterKeyStyle = lipgloss.NewStyle().Bold(true).Foreground(ColorSecondary)
 	SearchFilterValueStyle = lipgloss.NewStyle().Foreground(ColorPrimary)
 	SearchDetailLabelStyle = lipgloss.NewStyle().Foreground(ColorMuted)
 	SearchDetailValueStyle = lipgloss.NewStyle()
-	SearchHelpKeyStyle     = lipgloss.NewStyle().Bold(true).Foreground(ColorPrimary)
-	SearchErrorStyle       = lipgloss.NewStyle().Bold(true).Foreground(ColorError)
-)
+	SearchHelpKeyStyle = lipgloss.NewStyle().Bold(true).Foreground(ColorPrimary)
+	SearchErrorStyle = lipgloss.NewStyle().Bold(true).Foreground(ColorError)
+}
 
 // RenderStars renders quality stars (filled and empty).
 func RenderStars(quality int) string {

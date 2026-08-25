@@ -9,10 +9,10 @@ import (
 	"strings"
 	"time"
 
+	"charm.land/bubbles/v2/textinput"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/atotto/clipboard"
-	"github.com/charmbracelet/bubbles/textinput"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/bodaay/HuggingFaceModelDownloader/pkg/hfdownloader"
@@ -81,10 +81,13 @@ func newModelSearchModelWithFetcher(ctx context.Context, opts hfdownloader.Model
 	input.Prompt = ""
 	input.Placeholder = "model name or owner/model"
 	input.CharLimit = 200
-	input.PromptStyle = SearchInputPromptStyle
-	input.TextStyle = SearchInputTextStyle
-	input.PlaceholderStyle = SearchMutedStyle
-	input.Cursor.Style = SearchAccentStyle
+	inputStyles := textinput.DefaultStyles(themeIsDark)
+	inputStyles.Focused.Prompt = SearchInputPromptStyle
+	inputStyles.Focused.Text = SearchInputTextStyle
+	inputStyles.Focused.Placeholder = SearchMutedStyle
+	inputStyles.Blurred = inputStyles.Focused
+	inputStyles.Cursor.Color = ColorPrimary
+	input.SetStyles(inputStyles)
 	input.SetValue(opts.Query)
 
 	if opts.Sort == "" {
@@ -109,7 +112,7 @@ func newModelSearchModelWithFetcher(ctx context.Context, opts hfdownloader.Model
 
 // Init implements tea.Model.
 func (m *ModelSearchModel) Init() tea.Cmd {
-	return tea.Batch(m.startSearch(), m.input.Cursor.BlinkCmd())
+	return tea.Batch(m.startSearch(), tea.RequestBackgroundColor)
 }
 
 // Update implements tea.Model.
@@ -117,7 +120,18 @@ func (m *ModelSearchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
-		m.input.Width = searchMax(8, msg.Width-12)
+		m.input.SetWidth(searchMax(8, msg.Width-12))
+		return m, nil
+
+	case tea.BackgroundColorMsg:
+		setBackgroundTheme(msg.IsDark())
+		styles := textinput.DefaultStyles(themeIsDark)
+		styles.Focused.Prompt = SearchInputPromptStyle
+		styles.Focused.Text = SearchInputTextStyle
+		styles.Focused.Placeholder = SearchMutedStyle
+		styles.Blurred = styles.Focused
+		styles.Cursor.Color = ColorPrimary
+		m.input.SetStyles(styles)
 		return m, nil
 
 	case searchSpinnerMsg:
@@ -163,7 +177,7 @@ func (m *ModelSearchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		if msg.String() == "ctrl+c" {
 			return m.cancel()
 		}
@@ -181,7 +195,7 @@ func (m *ModelSearchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m *ModelSearchModel) updateInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m *ModelSearchModel) updateInput(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc":
 		m.input.Blur()
@@ -204,7 +218,7 @@ func (m *ModelSearchModel) updateInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-func (m *ModelSearchModel) updateBrowser(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m *ModelSearchModel) updateBrowser(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "q", "esc":
 		return m.cancel()
@@ -364,7 +378,7 @@ func dedupeNewResults(existing, incoming []hfdownloader.ModelSearchResult) []hfd
 }
 
 // View implements tea.Model.
-func (m *ModelSearchModel) View() string {
+func (m *ModelSearchModel) render() string {
 	if m.done {
 		return ""
 	}
@@ -399,6 +413,16 @@ func (m *ModelSearchModel) View() string {
 	help := m.renderHelp(w)
 	content := strings.Join([]string{top, searchLine, filters, separator, body, help}, "\n")
 	return fitScreen(content, w, h, SearchScreenStyle)
+}
+
+// View implements tea.Model.
+func (m *ModelSearchModel) View() tea.View {
+	view := tea.NewView(m.render())
+	view.AltScreen = true
+	if !m.input.VirtualCursor() {
+		view.Cursor = m.input.Cursor()
+	}
+	return view
 }
 
 func (m *ModelSearchModel) renderFilters(width int) string {
@@ -466,11 +490,13 @@ func (m *ModelSearchModel) renderResults(width, height int) string {
 }
 
 func (m *ModelSearchModel) renderResultRow(model hfdownloader.ModelSearchResult, selected bool, width int) string {
-	stats := compactNumber(model.Downloads) + " ↓  " + compactNumber(model.Likes) + " ♥"
+	// Keep table metadata ASCII-only. Ambiguous-width glyphs can wrap a row in
+	// terminals whose Unicode width table differs from the renderer's.
+	stats := "dl:" + compactNumber(model.Downloads) + "|likes:" + compactNumber(model.Likes)
 	metaW := lipgloss.Width(stats)
 	idW := searchMax(8, width-metaW-2)
 	line := ansi.Truncate(model.ID, idW, "…")
-	line += strings.Repeat(" ", searchMax(1, width-lipgloss.Width(line)-metaW)) + stats
+	line += "  " + stats
 	line = ansi.Truncate(line, width, "…")
 	if selected {
 		return SearchSelectedStyle.Width(width).Render(line)
@@ -549,7 +575,7 @@ func (m *ModelSearchModel) Result() ModelSearchResult { return m.result }
 // RunModelSearch launches the interactive model browser.
 func RunModelSearch(ctx context.Context, opts hfdownloader.ModelSearchOptions) (*ModelSearchResult, error) {
 	model := NewModelSearchModel(ctx, opts)
-	final, err := tea.NewProgram(model, tea.WithAltScreen()).Run()
+	final, err := tea.NewProgram(model, programOptions()...).Run()
 	if err != nil {
 		return nil, fmt.Errorf("run model search: %w", err)
 	}

@@ -9,8 +9,9 @@ import (
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/bodaay/HuggingFaceModelDownloader/pkg/hfdownloader"
 	"github.com/bodaay/HuggingFaceModelDownloader/pkg/smartdl"
@@ -20,7 +21,8 @@ func TestModelSearchViewFillsTerminal(t *testing.T) {
 	m := newModelSearchModelWithFetcher(context.Background(), hfdownloader.ModelSearchOptions{Query: "llama"}, nil)
 	m.width, m.height = 110, 28
 	m.results = sampleSearchResults(20)
-	view := m.View()
+	view := m.View().Content
+	plainView := ansi.Strip(view)
 	if got := lipgloss.Height(view); got != m.height {
 		t.Fatalf("height = %d, want %d", got, m.height)
 	}
@@ -30,11 +32,11 @@ func TestModelSearchViewFillsTerminal(t *testing.T) {
 		}
 	}
 	for _, want := range []string{"HF MODEL EXPLORER", "Models", "owner/model-00", "Selected", "s:sort"} {
-		if !strings.Contains(view, want) {
+		if !strings.Contains(plainView, want) {
 			t.Errorf("view missing %q", want)
 		}
 	}
-	if strings.Contains(view, "\n│ ♥") {
+	if strings.Contains(plainView, "\n│ |likes:") {
 		t.Fatal("result statistics wrapped onto a second row")
 	}
 }
@@ -43,7 +45,8 @@ func TestModelSearchViewUsesNarrowLayout(t *testing.T) {
 	m := newModelSearchModelWithFetcher(context.Background(), hfdownloader.ModelSearchOptions{Query: "qwen"}, nil)
 	m.width, m.height = 72, 24
 	m.results = sampleSearchResults(8)
-	view := m.View()
+	view := m.View().Content
+	plainView := ansi.Strip(view)
 	if got := lipgloss.Height(view); got != m.height {
 		t.Fatalf("height = %d, want %d", got, m.height)
 	}
@@ -52,7 +55,7 @@ func TestModelSearchViewUsesNarrowLayout(t *testing.T) {
 			t.Fatalf("line %d width = %d, want %d", i, got, m.width)
 		}
 	}
-	if !strings.Contains(view, "Selected") {
+	if !strings.Contains(plainView, "Selected") {
 		t.Fatal("narrow layout omitted detail panel")
 	}
 }
@@ -63,17 +66,17 @@ func TestModelSearchNavigationAndFilters(t *testing.T) {
 			return &hfdownloader.ModelSearchPage{}, nil
 		})
 	m.results = sampleSearchResults(3)
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	updated, _ := m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyDown}))
 	m = updated.(*ModelSearchModel)
 	if m.cursor != 1 {
 		t.Fatalf("cursor = %d", m.cursor)
 	}
-	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
+	updated, cmd := m.Update(tea.KeyPressMsg(tea.Key{Code: 's', Text: "s"}))
 	m = updated.(*ModelSearchModel)
 	if m.opts.Sort != "downloads" || cmd == nil {
 		t.Fatalf("sort = %q, cmd nil = %v", m.opts.Sort, cmd == nil)
 	}
-	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'g'}})
+	updated, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: 'g', Text: "g"}))
 	m = updated.(*ModelSearchModel)
 	if m.access != 1 || m.searchOptions().Gated == nil || *m.searchOptions().Gated {
 		t.Fatalf("access filter was not changed to open")
@@ -125,7 +128,8 @@ func TestSelectorViewFillsTerminalAndKeepsControlsVisible(t *testing.T) {
 		SelectableItems: items,
 	})
 	m.width, m.height, m.cursor = 80, 24, 20
-	view := m.View()
+	view := m.View().Content
+	plainView := ansi.Strip(view)
 	if got := lipgloss.Height(view); got != m.height {
 		t.Fatalf("height = %d, want %d", got, m.height)
 	}
@@ -135,7 +139,7 @@ func TestSelectorViewFillsTerminalAndKeepsControlsVisible(t *testing.T) {
 		}
 	}
 	for _, want := range []string{"Q20_K_M", "Selected:", "Command:", "enter download"} {
-		if !strings.Contains(view, want) {
+		if !strings.Contains(plainView, want) {
 			t.Errorf("view missing %q", want)
 		}
 	}
@@ -172,7 +176,7 @@ func TestBranchPickerViewFillsTerminal(t *testing.T) {
 		{Name: "main", Type: "branch"}, {Name: "dev", Type: "branch"}, {Name: "v1", Type: "tag"},
 	})
 	m.width, m.height = 70, 18
-	if got := lipgloss.Height(m.View()); got != m.height {
+	if got := lipgloss.Height(m.View().Content); got != m.height {
 		t.Fatalf("height = %d, want %d", got, m.height)
 	}
 }
@@ -215,7 +219,7 @@ func TestModelSearchLoadsMorePagesOnScroll(t *testing.T) {
 	}
 
 	// Jump to the end: should trigger a load-more fetch.
-	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnd})
+	updated, cmd := m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyEnd}))
 	m = updated.(*ModelSearchModel)
 	if cmd == nil {
 		t.Fatal("expected load-more command at end of list")

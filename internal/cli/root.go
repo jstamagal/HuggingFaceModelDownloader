@@ -40,6 +40,10 @@ func Execute(version string) error {
 	defer cancel()
 
 	var theme string
+	colorMode := strings.TrimSpace(os.Getenv("HF_COLOR"))
+	if colorMode == "" {
+		colorMode = "auto"
+	}
 	root := &cobra.Command{
 		Use:           "hfdownloader",
 		Short:         "Fast, resumable downloader for Hugging Face models & datasets",
@@ -50,9 +54,15 @@ func Execute(version string) error {
 			switch theme {
 			case "auto", "light", "dark":
 				tui.SetTheme(theme)
-				return nil
 			default:
 				return fmt.Errorf("invalid --theme %q (use auto, light, or dark)", theme)
+			}
+			switch colorMode {
+			case "auto", "always", "never":
+				tui.SetColorMode(colorMode)
+				return nil
+			default:
+				return fmt.Errorf("invalid --color %q (use auto, always, or never)", colorMode)
 			}
 		},
 	}
@@ -66,6 +76,7 @@ func Execute(version string) error {
 	root.PersistentFlags().StringVar(&ro.LogFile, "log-file", "", "Write logs to file (in addition to stderr)")
 	root.PersistentFlags().StringVar(&ro.LogLevel, "log-level", "info", "Log level: debug, info, warn, error")
 	root.PersistentFlags().StringVar(&theme, "theme", "auto", "Color theme for interactive UI: auto, light, dark (auto detects the terminal background)")
+	root.PersistentFlags().StringVar(&colorMode, "color", colorMode, "Color output: auto, always, never (also HF_COLOR)")
 
 	// Add commands
 	downloadCmd := newDownloadCmd(ctx, ro)
@@ -75,6 +86,7 @@ func Execute(version string) error {
 	root.AddCommand(newConfigCmd())
 	root.AddCommand(newRebuildCmd(ro))
 	root.AddCommand(newListCmd(ro))
+	root.AddCommand(newCacheCmd(ro))
 	root.AddCommand(newInfoCmd(ro))
 	root.AddCommand(newMirrorCmd(ro))
 	root.AddCommand(newAnalyzeCmd(ctx, ro))

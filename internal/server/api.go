@@ -613,22 +613,22 @@ func (s *Server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 
 // CachedRepoInfo represents a cached repository for the API response.
 type CachedRepoInfo struct {
-	Repo           string            `json:"repo"`
-	Owner          string            `json:"owner"`
-	Name           string            `json:"name"`
-	Type           string            `json:"type"` // "model" or "dataset"
-	Path           string            `json:"path"`
-	FriendlyPath   string            `json:"friendlyPath,omitempty"`
-	Size           int64             `json:"size"`
-	SizeHuman      string            `json:"sizeHuman"`
-	FileCount      int               `json:"fileCount"`
-	Branch         string            `json:"branch,omitempty"`
-	Commit         string            `json:"commit,omitempty"`
-	Downloaded     string            `json:"downloaded,omitempty"`
-	DownloadStatus string            `json:"downloadStatus,omitempty"` // "complete", "filtered", "unknown"
-	Snapshots      []string          `json:"snapshots,omitempty"`
-	Files          []CachedFileInfo  `json:"files,omitempty"`
-	Manifest       *ManifestInfo     `json:"manifest,omitempty"`
+	Repo           string           `json:"repo"`
+	Owner          string           `json:"owner"`
+	Name           string           `json:"name"`
+	Type           string           `json:"type"` // "model", "dataset", or "space"
+	Path           string           `json:"path"`
+	FriendlyPath   string           `json:"friendlyPath,omitempty"`
+	Size           int64            `json:"size"`
+	SizeHuman      string           `json:"sizeHuman"`
+	FileCount      int              `json:"fileCount"`
+	Branch         string           `json:"branch,omitempty"`
+	Commit         string           `json:"commit,omitempty"`
+	Downloaded     string           `json:"downloaded,omitempty"`
+	DownloadStatus string           `json:"downloadStatus,omitempty"` // "complete", "filtered", "unknown"
+	Snapshots      []string         `json:"snapshots,omitempty"`
+	Files          []CachedFileInfo `json:"files,omitempty"`
+	Manifest       *ManifestInfo    `json:"manifest,omitempty"`
 }
 
 // CachedFileInfo represents a file in the cache.
@@ -641,23 +641,24 @@ type CachedFileInfo struct {
 
 // ManifestInfo contains manifest data if available.
 type ManifestInfo struct {
-	Branch      string `json:"branch"`
-	Commit      string `json:"commit"`
-	Downloaded  string `json:"downloaded"`
-	Command     string `json:"command,omitempty"`
-	TotalSize   int64  `json:"totalSize"`
-	TotalFiles  int    `json:"totalFiles"`
-	IsFiltered  bool   `json:"isFiltered"`  // True if download used filters
-	Filters     string `json:"filters,omitempty"` // The filter string if used
+	Branch     string `json:"branch"`
+	Commit     string `json:"commit"`
+	Downloaded string `json:"downloaded"`
+	Command    string `json:"command,omitempty"`
+	TotalSize  int64  `json:"totalSize"`
+	TotalFiles int    `json:"totalFiles"`
+	IsFiltered bool   `json:"isFiltered"`        // True if download used filters
+	Filters    string `json:"filters,omitempty"` // The filter string if used
 }
 
 // CacheStats contains aggregate statistics about the cache.
 type CacheStats struct {
-	TotalModels   int    `json:"totalModels"`
-	TotalDatasets int    `json:"totalDatasets"`
-	TotalSize     int64  `json:"totalSize"`
+	TotalModels    int    `json:"totalModels"`
+	TotalDatasets  int    `json:"totalDatasets"`
+	TotalSpaces    int    `json:"totalSpaces"`
+	TotalSize      int64  `json:"totalSize"`
 	TotalSizeHuman string `json:"totalSizeHuman"`
-	TotalFiles    int    `json:"totalFiles"`
+	TotalFiles     int    `json:"totalFiles"`
 }
 
 // handleCacheList lists all cached repositories with rich metadata.
@@ -686,13 +687,8 @@ func (s *Server) handleCacheList(w http.ResponseWriter, r *http.Request) {
 		repoID := rd.RepoID()
 
 		// Filter by type if specified
-		if repoType != "" {
-			if repoType == "dataset" && rdType != "dataset" {
-				continue
-			}
-			if repoType == "model" && rdType != "model" {
-				continue
-			}
+		if repoType != "" && rdType != repoType {
+			continue
 		}
 
 		// Filter by search term
@@ -713,10 +709,13 @@ func (s *Server) handleCacheList(w http.ResponseWriter, r *http.Request) {
 		})
 
 		// Update stats
-		if rdType == "model" {
+		switch rd.Type() {
+		case hfdownloader.RepoTypeModel:
 			stats.TotalModels++
-		} else {
+		case hfdownloader.RepoTypeDataset:
 			stats.TotalDatasets++
+		case hfdownloader.RepoTypeSpace:
+			stats.TotalSpaces++
 		}
 		stats.TotalSize += totalSize
 		stats.TotalFiles += fileCount
@@ -742,8 +741,11 @@ func (s *Server) handleCacheList(w http.ResponseWriter, r *http.Request) {
 		var manifest *ManifestInfo
 		var downloadStatus string
 		friendlyPath := rd.FriendlyPath()
-		manifestPath := filepath.Join(friendlyPath, hfdownloader.ManifestFilename)
-		if m, err := hfdownloader.ReadManifest(manifestPath); err == nil {
+		manifestPath := ""
+		if friendlyPath != "" {
+			manifestPath = filepath.Join(friendlyPath, hfdownloader.ManifestFilename)
+		}
+		if m, err := hfdownloader.ReadManifest(manifestPath); manifestPath != "" && err == nil {
 			// Parse command for filter flags
 			isFiltered, filters := parseCommandFilters(m.Command)
 
@@ -838,8 +840,12 @@ func (s *Server) handleCacheInfo(w http.ResponseWriter, r *http.Request) {
 		// Try as dataset
 		repoDir, _ = cache.Repo(repo, hfdownloader.RepoTypeDataset)
 		if _, err := os.Stat(repoDir.Path()); os.IsNotExist(err) {
-			writeError(w, http.StatusNotFound, "Repository not found in cache", "")
-			return
+			// Finally try as a Space.
+			repoDir, _ = cache.Repo(repo, hfdownloader.RepoTypeSpace)
+			if _, err := os.Stat(repoDir.Path()); os.IsNotExist(err) {
+				writeError(w, http.StatusNotFound, "Repository not found in cache", "")
+				return
+			}
 		}
 	}
 
@@ -908,8 +914,11 @@ func (s *Server) handleCacheInfo(w http.ResponseWriter, r *http.Request) {
 	var manifest *ManifestInfo
 	var downloadStatus string
 	friendlyPath := repoDir.FriendlyPath()
-	manifestPath := filepath.Join(friendlyPath, hfdownloader.ManifestFilename)
-	if m, err := hfdownloader.ReadManifest(manifestPath); err == nil {
+	manifestPath := ""
+	if friendlyPath != "" {
+		manifestPath = filepath.Join(friendlyPath, hfdownloader.ManifestFilename)
+	}
+	if m, err := hfdownloader.ReadManifest(manifestPath); manifestPath != "" && err == nil {
 		// Parse command for filter flags
 		isFiltered, filters := parseCommandFilters(m.Command)
 
@@ -1068,8 +1077,11 @@ func (s *Server) handleCacheDelete(w http.ResponseWriter, r *http.Request) {
 	// Determine type from query param
 	repoTypeStr := r.URL.Query().Get("type")
 	repoType := hfdownloader.RepoTypeModel
-	if repoTypeStr == "dataset" {
+	switch repoTypeStr {
+	case "dataset":
 		repoType = hfdownloader.RepoTypeDataset
+	case "space":
+		repoType = hfdownloader.RepoTypeSpace
 	}
 
 	cacheDir := s.config.CacheDir
@@ -1130,8 +1142,11 @@ func (s *Server) handleCacheDelete(w http.ResponseWriter, r *http.Request) {
 	// Security Layer 9: Verify path follows expected HF cache structure
 	// Must be: {cacheDir}/hub/{models|datasets}--{owner}--{name}
 	expectedPrefix := "models--"
-	if repoType == hfdownloader.RepoTypeDataset {
+	switch repoType {
+	case hfdownloader.RepoTypeDataset:
 		expectedPrefix = "datasets--"
+	case hfdownloader.RepoTypeSpace:
+		expectedPrefix = "spaces--"
 	}
 	hubSubpath, err := filepath.Rel(absCacheDir, absHubPath)
 	if err != nil || !strings.HasPrefix(hubSubpath, filepath.Join("hub", expectedPrefix)) {

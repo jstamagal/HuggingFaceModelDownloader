@@ -55,6 +55,10 @@ func (c *HFCache) Sync(opts SyncOptions) (*SyncResult, error) {
 		if !ok {
 			continue // Not a valid repo directory
 		}
+		// Spaces use the Hub cache but have no downloader friendly view.
+		if repoType == RepoTypeSpace {
+			continue
+		}
 
 		result.ReposScanned++
 
@@ -88,7 +92,7 @@ func (c *HFCache) Sync(opts SyncOptions) (*SyncResult, error) {
 }
 
 // parseRepoDirName extracts repo type, owner, and name from a hub directory name.
-// Format: models--owner--name or datasets--owner--name
+// Format: models--owner--name, datasets--owner--name, or spaces--owner--name
 func parseRepoDirName(dirName string) (RepoType, string, string, bool) {
 	var repoType RepoType
 	var rest string
@@ -99,6 +103,9 @@ func parseRepoDirName(dirName string) (RepoType, string, string, bool) {
 	} else if strings.HasPrefix(dirName, "datasets--") {
 		repoType = RepoTypeDataset
 		rest = strings.TrimPrefix(dirName, "datasets--")
+	} else if strings.HasPrefix(dirName, "spaces--") {
+		repoType = RepoTypeSpace
+		rest = strings.TrimPrefix(dirName, "spaces--")
 	} else {
 		return "", "", "", false
 	}

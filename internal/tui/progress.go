@@ -12,9 +12,9 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/charmbracelet/bubbles/progress"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/progress"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 	"golang.org/x/term"
 
@@ -44,6 +44,7 @@ func NewLiveRenderer(job hfdownloader.Job, cfg hfdownloader.Settings) *LiveRende
 
 	lr.model = newDownloadModel(job, cfg)
 	opts := []tea.ProgramOption{tea.WithOutput(os.Stdout)}
+	opts = append(opts, programOptions()...)
 	if !term.IsTerminal(int(os.Stdin.Fd())) {
 		// No interactive input available; rely on SIGINT for cancellation.
 		opts = append(opts, tea.WithInput(nil))
@@ -162,10 +163,10 @@ type downloadModel struct {
 func newDownloadModel(job hfdownloader.Job, cfg hfdownloader.Settings) *downloadModel {
 	newBar := func() progress.Model {
 		b := progress.New(
-			progress.WithGradient("#5A56E0", "#EE6FF8"),
+			progress.WithColors(lipgloss.Color("#5A56E0"), lipgloss.Color("#EE6FF8")),
 			progress.WithoutPercentage(),
+			progress.WithWidth(30),
 		)
-		b.Width = 30
 		return b
 	}
 	return &downloadModel{
@@ -181,7 +182,7 @@ func newDownloadModel(job hfdownloader.Job, cfg hfdownloader.Settings) *download
 }
 
 func (m *downloadModel) Init() tea.Cmd {
-	return progressTick()
+	return tea.Batch(progressTick(), tea.RequestBackgroundColor)
 }
 
 func progressTick() tea.Cmd {
@@ -200,11 +201,15 @@ func (m *downloadModel) ensure(path string) *fileState {
 
 func (m *downloadModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case tea.BackgroundColorMsg:
+		setBackgroundTheme(msg.IsDark())
+		return m, nil
+
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		return m, nil
 
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		// Only ctrl+c cancels — a stray letter key must never abort a
 		// multi-hour download.
 		if msg.String() == "ctrl+c" {
@@ -322,7 +327,7 @@ func (m *downloadModel) fileSpeed(fs *fileState) float64 {
 	return fs.smoothedSpeed
 }
 
-func (m *downloadModel) View() string {
+func (m *downloadModel) render() string {
 	w := m.width
 	if w < 60 {
 		w = 60
@@ -386,7 +391,7 @@ func (m *downloadModel) View() string {
 	if speed > 0 && aggBytes < aggTotal {
 		eta = fmtDuration(time.Duration(float64(aggTotal-aggBytes)/speed) * time.Second)
 	}
-	m.totalBar.Width = clampInt(w/3, 10, 40)
+	m.totalBar.SetWidth(clampInt(w/3, 10, 40))
 	b.WriteString(fmt.Sprintf("%s %3.0f%%  %s / %s  %s/s  ETA %s\n",
 		m.totalBar.ViewAs(pct), pct*100,
 		humanBytes(aggBytes), humanBytes(aggTotal),
@@ -421,8 +426,8 @@ func (m *downloadModel) View() string {
 		if fspeed > 0 && fs.bytes < fs.total {
 			fileEta = fmtDuration(time.Duration(float64(fs.total-fs.bytes)/fspeed) * time.Second)
 		}
-		m.fileBar.Width = clampInt(w/5, 8, 24)
-		nameW := clampInt(w-m.fileBar.Width-46, 16, 60)
+		m.fileBar.SetWidth(clampInt(w/5, 8, 24))
+		nameW := clampInt(w-m.fileBar.Width()-46, 16, 60)
 		name := ellipsizeMiddle(fs.path, nameW)
 		b.WriteString(fmt.Sprintf("  %s %s %3.0f%%  %9s/s  ETA %s\n",
 			name, m.fileBar.ViewAs(filePct), filePct*100,
@@ -442,6 +447,11 @@ func (m *downloadModel) View() string {
 		b.WriteString(SearchMutedStyle.Render("ctrl+c to cancel (resume is safe)") + "\n")
 	}
 	return b.String()
+}
+
+// View implements tea.Model.
+func (m *downloadModel) View() tea.View {
+	return tea.NewView(m.render())
 }
 
 func clampInt(v, lo, hi int) int {

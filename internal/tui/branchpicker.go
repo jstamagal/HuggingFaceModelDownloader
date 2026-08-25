@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"strings"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	"github.com/bodaay/HuggingFaceModelDownloader/pkg/smartdl"
 )
@@ -79,16 +79,19 @@ func NewBranchPickerModel(repo string, refs []smartdl.RepoRef) *BranchPickerMode
 
 // Init implements tea.Model.
 func (m *BranchPickerModel) Init() tea.Cmd {
-	return nil
+	return tea.RequestBackgroundColor
 }
 
 // Update implements tea.Model.
 func (m *BranchPickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case tea.BackgroundColorMsg:
+		setBackgroundTheme(msg.IsDark())
+
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		switch msg.String() {
 		case "ctrl+c", "q", "esc":
 			m.result.Cancelled = true
@@ -105,7 +108,7 @@ func (m *BranchPickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.cursor++
 			}
 
-		case "enter", " ":
+		case "enter", "space":
 			if m.cursor >= 0 && m.cursor < len(m.allItems) {
 				m.result.Selected = m.allItems[m.cursor].Ref.Name
 				m.done = true
@@ -118,7 +121,7 @@ func (m *BranchPickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 // View implements tea.Model.
-func (m *BranchPickerModel) View() string {
+func (m *BranchPickerModel) render() string {
 	if m.done {
 		return ""
 	}
@@ -136,6 +139,13 @@ func (m *BranchPickerModel) View() string {
 	list := m.renderRefViewport(w, searchMax(1, h-5))
 	footer := fillStyledLine(m.renderFooter(), w, SearchBottomBarStyle)
 	return fitScreen(strings.Join([]string{title, subtitle, hint, separator, list, footer}, "\n"), w, h, SearchScreenStyle)
+}
+
+// View implements tea.Model.
+func (m *BranchPickerModel) View() tea.View {
+	view := tea.NewView(m.render())
+	view.AltScreen = true
+	return view
 }
 
 func (m *BranchPickerModel) renderRefViewport(width, height int) string {
@@ -254,7 +264,7 @@ func RunBranchPicker(repo string, refs []smartdl.RepoRef) (*BranchPickerResult, 
 	}
 
 	model := NewBranchPickerModel(repo, refs)
-	p := tea.NewProgram(model, tea.WithAltScreen())
+	p := tea.NewProgram(model, programOptions()...)
 
 	finalModel, err := p.Run()
 	if err != nil {

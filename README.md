@@ -332,6 +332,9 @@ files:
 # List everything you've downloaded
 hfdownloader list
 
+# Browse the cache interactively and delete what you no longer need
+hfdownloader cache
+
 # Get details about a specific download
 hfdownloader info Mistral
 ```
@@ -492,6 +495,8 @@ Get from [Releases](https://github.com/bodaay/HuggingFaceModelDownloader/release
 
 ### Build from Source
 
+Requires Go 1.25 or newer.
+
 ```bash
 git clone https://github.com/bodaay/HuggingFaceModelDownloader
 cd HuggingFaceModelDownloader
@@ -556,6 +561,7 @@ endpoint: https://hf-mirror.com
 | `analyze` | Analyze repository before downloading |
 | `serve` | Start web server with REST API |
 | `list` | List all downloaded repos |
+| `cache` | Browse and safely clean the local Hugging Face cache |
 | `info` | Show details about a downloaded repo |
 | `rebuild` | Regenerate friendly view from HF cache |
 | `mirror` | Sync cache between locations |
@@ -564,6 +570,11 @@ endpoint: https://hf-mirror.com
 | `version` | Show version info |
 
 Full documentation: [docs/CLI.md](docs/CLI.md) • [docs/API.md](docs/API.md) • [docs/V3_FEATURES.md](docs/V3_FEATURES.md)
+
+**No color over SSH?** SSH itself does not disable colors. Check whether the
+remote environment sets `NO_COLOR=1`; `hfdownloader --color always search ...`
+overrides it for this app. Use `--theme light` or `--theme dark` if terminal
+background detection is incorrect through a relay or multiplexer.
 
 ---
 

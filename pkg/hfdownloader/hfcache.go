@@ -36,12 +36,13 @@ func warnWindowsSymlink() {
 	}
 }
 
-// RepoType indicates whether a repository is a model or dataset.
+// RepoType identifies a model, dataset, or Space repository.
 type RepoType string
 
 const (
 	RepoTypeModel   RepoType = "model"
 	RepoTypeDataset RepoType = "dataset"
+	RepoTypeSpace   RepoType = "space"
 )
 
 // HFCache represents the HuggingFace cache root directory.
@@ -120,6 +121,11 @@ func (c *HFCache) Repo(repoID string, repoType RepoType) (*RepoDir, error) {
 	if len(parts) != 2 {
 		return nil, fmt.Errorf("invalid repo ID: %q (expected owner/name)", repoID)
 	}
+	switch repoType {
+	case RepoTypeModel, RepoTypeDataset, RepoTypeSpace:
+	default:
+		return nil, fmt.Errorf("invalid repo type: %q", repoType)
+	}
 	return &RepoDir{
 		cache:    c,
 		repoType: repoType,
@@ -129,11 +135,14 @@ func (c *HFCache) Repo(repoID string, repoType RepoType) (*RepoDir, error) {
 }
 
 // dirName returns the HF cache directory name for this repo.
-// Format: models--{owner}--{name} or datasets--{owner}--{name}
+// Format: models--{owner}--{name}, datasets--{owner}--{name}, or spaces--{owner}--{name}
 func (r *RepoDir) dirName() string {
 	prefix := "models"
-	if r.repoType == RepoTypeDataset {
+	switch r.repoType {
+	case RepoTypeDataset:
 		prefix = "datasets"
+	case RepoTypeSpace:
+		prefix = "spaces"
 	}
 	return fmt.Sprintf("%s--%s--%s", prefix, r.owner, r.name)
 }
@@ -311,10 +320,14 @@ func isProcessAlive(pid int) bool {
 // FriendlyPath returns the path in the friendly view for this repo.
 // Example: ~/.cache/huggingface/models/TheBloke/Mistral-7B-Instruct-v0.2-GGUF
 func (r *RepoDir) FriendlyPath() string {
-	if r.repoType == RepoTypeDataset {
+	switch r.repoType {
+	case RepoTypeDataset:
 		return filepath.Join(r.cache.DatasetsDir(), r.owner, r.name)
+	case RepoTypeSpace:
+		return ""
+	default:
+		return filepath.Join(r.cache.ModelsDir(), r.owner, r.name)
 	}
-	return filepath.Join(r.cache.ModelsDir(), r.owner, r.name)
 }
 
 // RepoID returns the repository ID in owner/name format.
@@ -332,7 +345,7 @@ func (r *RepoDir) Name() string {
 	return r.name
 }
 
-// Type returns the repository type (model or dataset).
+// Type returns the repository type.
 func (r *RepoDir) Type() RepoType {
 	return r.repoType
 }

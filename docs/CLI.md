@@ -15,6 +15,7 @@ Complete command-line reference for `hfdownloader`.
   - [serve](#serve)
   - [analyze](#analyze)
   - [list](#list)
+  - [cache](#cache)
   - [info](#info)
   - [rebuild](#rebuild)
   - [mirror](#mirror)
@@ -34,6 +35,7 @@ Complete command-line reference for `hfdownloader`.
 bash <(curl -sSL https://g.bodaay.io/hfd) -i
 
 # Or build from source
+# Requires Go 1.25+
 git clone https://github.com/bodaay/HuggingFaceModelDownloader
 cd HuggingFaceModelDownloader
 go build -o hfdownloader ./cmd/hfdownloader
@@ -65,6 +67,9 @@ hfdownloader serve
 # List downloaded repos
 hfdownloader list
 
+# Browse and clean downloaded repos interactively
+hfdownloader cache
+
 # Show repo details
 hfdownloader info Mistral-7B
 ```
@@ -84,6 +89,12 @@ These flags work with all commands:
 | `--config` | | string | | Path to config file (JSON/YAML) |
 | `--log-file` | | string | | Write logs to file |
 | `--log-level` | | string | `info` | Log level: debug, info, warn, error |
+| `--theme` | | string | `auto` | TUI background theme: auto, light, dark |
+| `--color` | | string | `auto` | Color output: auto, always, never |
+
+`--color auto` honors the standard `NO_COLOR` environment variable. If a
+remote shell injects `NO_COLOR=1` even though its terminal supports color, use
+`--color always` or set `HF_COLOR=always`.
 
 ### Authentication
 
@@ -453,6 +464,50 @@ model    meta-llama/Llama-3-8B-Instruct          16.1 GiB  main     2024-01-14
 dataset  facebook/flores                         128 MiB   main     2024-01-10
 
 Total: 3 repositories (20.4 GiB)
+```
+
+---
+
+### cache
+
+Browse models, datasets, and Spaces in the local Hugging Face Hub cache and
+remove repositories you no longer need. On a terminal, the command opens an
+interactive browser. Use the arrow keys or `j`/`k` to move, `space` to select,
+`/` to search, `t` to filter by type, `s` to change sorting, and `d` to delete.
+Deletion always requires a second confirmation.
+Passing an output/filter flag switches the command to non-interactive output,
+which makes it easy to use in scripts.
+
+```
+hfdownloader cache [flags]
+hfdownloader cache delete [TYPE:]OWNER/NAME... [flags]
+```
+
+#### Flags
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--cache-dir` | string | `~/.cache/huggingface` | Cache directory |
+| `--type` | string | | Filter: model, dataset, space |
+| `--search` | string | | Filter repository names in non-interactive output |
+| `--sort` | string | `size` | Sort: size, name, recent |
+| `--format` | string | `table` | Non-interactive output: table, json |
+
+The `delete` subcommand accepts `--yes` for automation and `--force` to override
+active-download protection. Prefix the repository with its type when the same
+`owner/name` exists as more than one Hub repository type.
+
+#### Examples
+
+```bash
+# Interactive cleanup browser
+hfdownloader cache
+
+# Script-friendly inventory
+hfdownloader cache --sort size --format json
+
+# Explicit, confirmed deletion for automation
+hfdownloader cache delete model:TheBloke/Mistral-7B-GGUF --yes
 ```
 
 ---
@@ -911,6 +966,9 @@ hfdownloader version -s
 | `HF_TOKEN` | HuggingFace access token |
 | `HF_HOME` | Override `~/.cache/huggingface` root |
 | `HF_HUB_CACHE` | Override just the `hub/` directory |
+| `HF_COLOR` | Color output: `auto`, `always`, or `never` |
+| `COLORFGBG` | Optional foreground/background palette hint used by auto theme |
+| `NO_COLOR` | Standard color opt-out honored by `--color auto` |
 | `HTTP_PROXY` / `http_proxy` | Proxy for HTTP requests |
 | `HTTPS_PROXY` / `https_proxy` | Proxy for HTTPS requests |
 | `ALL_PROXY` / `all_proxy` | Fallback proxy for all protocols |
@@ -924,6 +982,30 @@ export HF_HOME=/mnt/data/huggingface
 export HTTPS_PROXY=http://proxy.corp.com:8080
 export NO_PROXY=localhost,.internal.com
 ```
+
+### SSH color troubleshooting
+
+SSH does not inherently disable Bubble Tea colors. It forwards terminal
+capabilities through environment variables, so a remote `TERM=dumb`, missing
+terminfo entry, or `NO_COLOR=1` can produce monochrome output. Check the remote
+session with:
+
+```bash
+printf 'TERM=%s COLORTERM=%s NO_COLOR=%s\n' "$TERM" "$COLORTERM" "$NO_COLOR"
+```
+
+For a color-capable terminal reported as `xterm-256color`, either remove an
+unwanted `NO_COLOR` setting or explicitly override it:
+
+```bash
+hfdownloader --color always search llama
+# Persistent for hfdownloader only:
+export HF_COLOR=always
+```
+
+If background detection is wrong through a relay or multiplexer, use
+`--theme light` or `--theme dark`. Auto mode also understands common
+`COLORFGBG` values such as `15;0` (dark) and `0;15` (light).
 
 ---
 
@@ -1027,6 +1109,9 @@ hfdownloader serve --endpoint https://hf-mirror.com
 ```bash
 # View downloads
 hfdownloader list --sort size
+
+# Interactively select repositories and reclaim their disk space
+hfdownloader cache
 
 # Get details
 hfdownloader info Mistral-7B

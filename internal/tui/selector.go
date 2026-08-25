@@ -7,9 +7,9 @@ import (
 	"fmt"
 	"strings"
 
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/atotto/clipboard"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/bodaay/HuggingFaceModelDownloader/pkg/smartdl"
@@ -124,13 +124,16 @@ func NewSelectorModel(info *smartdl.RepoInfo) *SelectorModel {
 
 // Init implements tea.Model.
 func (m *SelectorModel) Init() tea.Cmd {
-	return nil
+	return tea.RequestBackgroundColor
 }
 
 // Update implements tea.Model.
 func (m *SelectorModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
-	case tea.KeyMsg:
+	case tea.BackgroundColorMsg:
+		setBackgroundTheme(msg.IsDark())
+
+	case tea.KeyPressMsg:
 		switch msg.String() {
 		case "ctrl+c", "q":
 			m.result.Action = "cancel"
@@ -147,7 +150,7 @@ func (m *SelectorModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.cursor++
 			}
 
-		case " ": // Space to toggle
+		case "space": // Space to toggle
 			m.toggleCurrent()
 
 		case "a": // Select all
@@ -186,7 +189,7 @@ func (m *SelectorModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 // View implements tea.Model.
-func (m *SelectorModel) View() string {
+func (m *SelectorModel) render() string {
 	if m.done {
 		return ""
 	}
@@ -221,6 +224,13 @@ func (m *SelectorModel) View() string {
 
 	content := strings.Join([]string{title, typeInfo, statsInfo, separator, items, summaryLine, command, footer}, "\n")
 	return fitScreen(content, w, h, SearchScreenStyle)
+}
+
+// View implements tea.Model.
+func (m *SelectorModel) View() tea.View {
+	view := tea.NewView(m.render())
+	view.AltScreen = true
+	return view
 }
 
 type selectorRow struct {
@@ -396,7 +406,7 @@ func RunSelector(info *smartdl.RepoInfo) (*SelectorResult, error) {
 	}
 
 	model := NewSelectorModel(info)
-	p := tea.NewProgram(model, tea.WithAltScreen())
+	p := tea.NewProgram(model, programOptions()...)
 
 	finalModel, err := p.Run()
 	if err != nil {
