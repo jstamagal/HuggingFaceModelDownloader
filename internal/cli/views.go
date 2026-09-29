@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -78,5 +80,53 @@ a view are left alone; run 'hfdownloader watch' to adopt them automatically.`,
 		},
 	}
 	vf.bind(cmd)
+	return cmd
+}
+
+func newWatchCmd(ro *RootOpts) *cobra.Command {
+	var vf viewsFlags
+	var reposFile, endpoint string
+	var settle, every time.Duration
+	cmd := &cobra.Command{
+		Use:   "watch",
+		Short: "Keep views current and adopt model files dropped into any view",
+		Long: `Watch rebuilds the views whenever the hub changes and ingests real files
+that appear inside a view:
+
+  <views>/lmstudio/<o>/<r>/x.gguf   adopted into hub as o/r, replaced by a link
+  <views>/ollama (ollama pull hf.co/...)   pulled layers moved into the hub
+  <views>/inbox/, <views>/hipfire/  repo found by Hub search, verified by hash
+  --maestro dir, <diffusion>/<cat>/ adopted, a symlink left at the same path
+
+Nothing is moved unless the Hub vouches for the exact bytes. Unmatched files
+(civitai downloads, private merges) are left where they are.`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cache, vopts := vf.resolve()
+			opts := hfdownloader.WatchOptions{
+				Views: vopts, Settle: settle, Rebuild: every,
+				Token: resolveHubToken(ro, cache.Root), Endpoint: resolveHubEndpoint(endpoint),
+				Log: func(f string, a ...any) {
+					fmt.Fprintf(os.Stderr, "%s "+f+"\n", append([]any{time.Now().Format("15:04:05")}, a...)...)
+				},
+			}
+			if reposFile != "" {
+				b, err := os.ReadFile(reposFile)
+				if err != nil {
+					return err
+				}
+				for _, l := range strings.Split(string(b), "\n") {
+					if l = strings.TrimSpace(l); l != "" && !strings.HasPrefix(l, "#") {
+						opts.MaestroRepos = append(opts.MaestroRepos, l)
+					}
+				}
+			}
+			return cache.Watch(cmd.Context(), opts)
+		},
+	}
+	vf.bind(cmd)
+	cmd.Flags().StringVar(&reposFile, "maestro-repos", "", "Candidate repo list for files Maestro downloads (one owner/name per line)")
+	cmd.Flags().StringVar(&endpoint, "endpoint", "", "Hub endpoint")
+	cmd.Flags().DurationVar(&settle, "settle", 10*time.Second, "A new file must be unchanged this long before it is ingested")
+	cmd.Flags().DurationVar(&every, "rebuild-every", 5*time.Minute, "Periodic full views rebuild")
 	return cmd
 }

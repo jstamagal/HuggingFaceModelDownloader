@@ -22,8 +22,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -935,6 +937,41 @@ func humanBytes(n int64) string {
 	}
 	return fmt.Sprintf("%.1f%ciB", float64(n)/float64(div), "KMGTPE"[exp])
 }
+
+var guessStrip = regexp.MustCompile(`(?i)([-_.](i1|imatrix|mmproj|(I?Q\d(_[A-Z0-9]+)*)|MXFP4(_MOE)?|NVFP4|BF16|F16|F32|FP16|FP8|UD))+$`)
+
+// GuessRepos searches the Hub for repos that may hold a file named name.
+// Only candidates: adoption still verifies content, so a wrong guess is
+// harmless.
+func GuessRepos(ctx context.Context, name, token, endpoint string) ([]string, error) {
+	base := strings.TrimSuffix(filepath.Base(name), filepath.Ext(name))
+	base = shardSuffix.ReplaceAllString(base, "")
+	base = guessStrip.ReplaceAllString(base, "")
+	if len(base) < 4 {
+		return nil, fmt.Errorf("name %q too short to search", name)
+	}
+	api := &hubAPI{ctx: ctx, httpc: buildHTTPClientWithProxy(nil), token: token, endpoint: endpoint}
+	var out []string
+	seen := map[string]bool{}
+	for _, q := range []string{base, base + " gguf"} {
+		var ms []struct {
+			ID string `json:"id"`
+		}
+		u := fmt.Sprintf("%s/api/models?search=%s&limit=30&sort=downloads", getEndpoint(endpoint), url.QueryEscape(q))
+		if err := api.getJSON(u, &ms); err != nil {
+			return out, err
+		}
+		for _, m := range ms {
+			if !seen[m.ID] {
+				seen[m.ID] = true
+				out = append(out, m.ID)
+			}
+		}
+	}
+	return out, nil
+}
+
+var shardSuffix = regexp.MustCompile(`-\d{5}-of-\d{5}$`)
 
 // InferRepoFromPath returns owner/name from the last two path components
 // (LM Studio, `hf download --local-dir owner/name`, hfdownloader models/).

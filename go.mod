@@ -9,6 +9,7 @@ require (
 	github.com/atotto/clipboard v0.1.4
 	github.com/charmbracelet/colorprofile v0.4.3
 	github.com/charmbracelet/x/ansi v0.11.8
+	github.com/fsnotify/fsnotify v1.9.0
 	github.com/gorilla/websocket v1.5.3
 	github.com/spf13/cobra v1.7.0
 	golang.org/x/net v0.49.0

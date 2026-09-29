@@ -71,30 +71,8 @@ Examples:
 				}
 				repos = []string{id}
 			}
-			token := strings.TrimSpace(ro.Token)
-			if token == "" {
-				token = strings.TrimSpace(os.Getenv("HF_TOKEN"))
-			}
-			if token == "" {
-				if cfg := loadConfigMap(); cfg != nil {
-					if v, ok := cfg["token"].(string); ok {
-						token = strings.TrimSpace(v)
-					}
-				}
-			}
-			if token == "" {
-				// huggingface_hub's token file inside the cache root
-				if b, err := os.ReadFile(cache.Root + "/token"); err == nil {
-					token = strings.TrimSpace(string(b))
-				}
-			}
-			if endpoint == "" {
-				if cfg := loadConfigMap(); cfg != nil {
-					if v, ok := cfg["endpoint"].(string); ok {
-						endpoint = v
-					}
-				}
-			}
+			token := resolveHubToken(ro, cache.Root)
+			endpoint = resolveHubEndpoint(endpoint)
 			opts := hfdownloader.AdoptOptions{
 				Repos: repos, Dir: args[0], Files: args[1:],
 				Mode: hfdownloader.AdoptMode(mode), DryRun: dryRun, NoFetch: noFetch,
@@ -169,6 +147,37 @@ Examples:
 	cmd.Flags().IntVarP(&jobs, "jobs", "j", 4, "Parallel hashers")
 	cmd.Flags().StringVar(&endpoint, "endpoint", "", "Hub endpoint (default https://huggingface.co)")
 	return cmd
+}
+
+// resolveHubToken: --token > HF_TOKEN > config token > <cache>/token.
+func resolveHubToken(ro *RootOpts, cacheRoot string) string {
+	if t := strings.TrimSpace(ro.Token); t != "" {
+		return t
+	}
+	if t := strings.TrimSpace(os.Getenv("HF_TOKEN")); t != "" {
+		return t
+	}
+	if cfg := loadConfigMap(); cfg != nil {
+		if v, ok := cfg["token"].(string); ok && strings.TrimSpace(v) != "" {
+			return strings.TrimSpace(v)
+		}
+	}
+	if b, err := os.ReadFile(cacheRoot + "/token"); err == nil {
+		return strings.TrimSpace(string(b))
+	}
+	return ""
+}
+
+func resolveHubEndpoint(endpoint string) string {
+	if endpoint != "" {
+		return endpoint
+	}
+	if cfg := loadConfigMap(); cfg != nil {
+		if v, ok := cfg["endpoint"].(string); ok {
+			return v
+		}
+	}
+	return ""
 }
 
 func short(c string) string {
