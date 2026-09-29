@@ -28,7 +28,11 @@ func (v *viewsFlags) bind(cmd *cobra.Command) {
 
 func (v *viewsFlags) resolve() (*hfdownloader.HFCache, hfdownloader.ViewsOptions) {
 	cache := hfdownloader.NewHFCache(resolveCacheDir(v.cacheDir), hfdownloader.DefaultStaleTimeout)
-	parent := filepath.Dir(filepath.Clean(cache.Root))
+	root := filepath.Clean(cache.Root)
+	if r, err := filepath.EvalSymlinks(root); err == nil {
+		root = r // ~/.cache/huggingface -> /srv/models/huggingface: views sit beside the real store
+	}
+	parent := filepath.Dir(root)
 	opts := hfdownloader.ViewsOptions{Root: v.root, DiffusionDir: v.diffusion, MaestroDir: v.maestro}
 	if opts.Root == "" {
 		opts.Root = filepath.Join(parent, "views")
