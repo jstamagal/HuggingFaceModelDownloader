@@ -30,6 +30,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -491,7 +492,7 @@ func (c *HFCache) Adopt(ctx context.Context, opts AdoptOptions) (*AdoptResult, e
 	var locals []lf
 	res := &AdoptResult{Head: map[string]string{}}
 	addLocal := func(p string, info os.FileInfo) {
-		if !info.Mode().IsRegular() {
+		if !info.Mode().IsRegular() || info.Size() == 0 || info.Name() == viewsManifestName {
 			return
 		}
 		if adoptSkipName(info.Name()) {
@@ -744,6 +745,7 @@ func (c *HFCache) Adopt(ctx context.Context, opts AdoptOptions) (*AdoptResult, e
 		rd, _ := c.Repo(repo, RepoTypeModel)
 		rr := AdoptRepoResult{Repo: repo, Commit: chosen, IsHead: chosen == res.Head[repo]}
 		inSnapshot := map[string]bool{}
+		landed := 0
 
 		for _, i := range idx {
 			h := hashes[i]
@@ -781,6 +783,9 @@ func (c *HFCache) Adopt(ctx context.Context, opts AdoptOptions) (*AdoptResult, e
 				af.Status, af.Note = "error", err.Error()
 			} else {
 				af.Status = st
+				if pick.commit == chosen {
+					landed++
+				}
 				// Other paths in the chosen commit with identical content
 				// (Q8_0 shard == Q6_K shard) share the blob.
 				for _, rf := range chosenTree.match(h) {
@@ -825,7 +830,9 @@ func (c *HFCache) Adopt(ctx context.Context, opts AdoptOptions) (*AdoptResult, e
 			}
 		}
 
-		if !opts.DryRun {
+		if !opts.DryRun && landed == 0 {
+			opts.logf("%s: nothing landed in %s, refs/main left alone", repo, chosen[:8])
+		} else if !opts.DryRun {
 			// refs/main must point at a commit whose snapshot exists.
 			if cur, _ := rd.ReadRef("main"); cur == "" || cur == chosen || !dirExists(rd.SnapshotDir(cur)) || rr.IsHead {
 				if err := rd.WriteRef("main", chosen); err != nil {
@@ -868,10 +875,25 @@ func (c *HFCache) adoptOne(rd *RepoDir, h localHash, commit, repoPath string, op
 		case AdoptMove:
 			if err := os.Rename(h.Path, blob); err != nil {
 				var le *os.LinkError
-				if errors.As(err, &le) && strings.Contains(le.Err.Error(), "cross-device") {
-					return "", fmt.Errorf("source is on another filesystem than the cache; use --mode copy")
+				if !errors.As(err, &le) || !errors.Is(le.Err, syscall.EXDEV) {
+					return "", err
 				}
-				return "", err
+				// Other filesystem: what mv does. Copy, verify size, then drop the source.
+				tmp := blob + ".incomplete"
+				if err := copyFile(h.Path, tmp); err != nil {
+					os.Remove(tmp)
+					return "", err
+				}
+				if fi, err := os.Stat(tmp); err != nil || fi.Size() != h.Size {
+					os.Remove(tmp)
+					return "", fmt.Errorf("cross-fs copy of %s came out short", h.Path)
+				}
+				if err := os.Rename(tmp, blob); err != nil {
+					return "", err
+				}
+				if err := os.Remove(h.Path); err != nil {
+					return "", err
+				}
 			}
 		case AdoptHardlink:
 			if err := os.Link(h.Path, blob); err != nil {

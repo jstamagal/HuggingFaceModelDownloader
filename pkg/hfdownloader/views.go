@@ -164,8 +164,10 @@ type managedSet struct {
 	now  map[string]bool
 }
 
+const viewsManifestName = ".hfd-managed.json"
+
 func loadManaged(dir string) *managedSet {
-	m := &managedSet{path: filepath.Join(dir, ".hfd-managed.json"), old: map[string]bool{}, now: map[string]bool{}}
+	m := &managedSet{path: filepath.Join(dir, viewsManifestName), old: map[string]bool{}, now: map[string]bool{}}
 	var l []string
 	if b, err := os.ReadFile(m.path); err == nil && json.Unmarshal(b, &l) == nil {
 		for _, p := range l {
