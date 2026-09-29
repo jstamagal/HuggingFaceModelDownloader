@@ -189,10 +189,84 @@ func (a *hubAPI) getJSON(u string, v any) error {
 	}
 }
 
+// getPaged GETs u and returns the decoded page plus the rel="next" URL.
+func (a *hubAPI) getPaged(u string, v any) (string, error) {
+	for attempt := 0; ; attempt++ {
+		req, _ := http.NewRequestWithContext(a.ctx, "GET", u, nil)
+		addAuth(req, a.token)
+		resp, err := a.httpc.Do(req)
+		if err != nil {
+			return "", err
+		}
+		if resp.StatusCode == 429 && attempt < 6 {
+			resp.Body.Close()
+			wait := time.Duration(2<<attempt) * time.Second
+			if s, err := strconv.Atoi(resp.Header.Get("Retry-After")); err == nil && s > 0 {
+				wait = time.Duration(s) * time.Second
+			}
+			select {
+			case <-time.After(wait):
+				continue
+			case <-a.ctx.Done():
+				return "", a.ctx.Err()
+			}
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != 200 {
+			body, _ := io.ReadAll(io.LimitReader(resp.Body, 300))
+			return "", &APIError{StatusCode: resp.StatusCode, Status: resp.Status, URL: u, Message: strings.TrimSpace(string(body))}
+		}
+		if err := json.NewDecoder(resp.Body).Decode(v); err != nil {
+			return "", err
+		}
+		return nextLink(resp.Header.Get("Link")), nil
+	}
+}
+
+// nextLink extracts the rel="next" target of an RFC 8288 Link header.
+func nextLink(h string) string {
+	for _, part := range strings.Split(h, ",") {
+		if !strings.Contains(part, `rel="next"`) {
+			continue
+		}
+		if i, j := strings.Index(part, "<"), strings.Index(part, ">"); i >= 0 && j > i {
+			return part[i+1 : j]
+		}
+	}
+	return ""
+}
+
+// tree lists every file of repo@rev with one recursive, paginated listing
+// (the per-directory walk costs one request per folder).
 func (a *hubAPI) tree(repo, rev string) (*repoTree, error) {
-	job := Job{Repo: repo, Revision: rev}
 	var files []remoteFile
-	err := walkTree(a.ctx, a.httpc, a.token, a.endpoint, job, "", func(n hfNode) error {
+	u := fmt.Sprintf("%s/api/models/%s/tree/%s?recursive=true", getEndpoint(a.endpoint), repo, rev)
+	var nodes []hfNode
+	for u != "" {
+		var page []hfNode
+		next, err := a.getPaged(u, &page)
+		if err != nil {
+			return nil, err
+		}
+		nodes = append(nodes, page...)
+		u = next
+	}
+	err := func() error {
+		for _, n := range nodes {
+			if err := a.addNode(repo, n, &files); err != nil {
+				return err
+			}
+		}
+		return nil
+	}()
+	if err != nil {
+		return nil, err
+	}
+	return newRepoTree(repo, rev, files), nil
+}
+
+func (a *hubAPI) addNode(repo string, n hfNode, files *[]remoteFile) error {
+	{
 		if n.Type != "file" && n.Type != "blob" {
 			return nil
 		}
@@ -212,13 +286,9 @@ func (a *hubAPI) tree(repo, rev string) (*repoTree, error) {
 				return fmt.Errorf("%s: hub masked the file hashes (gated repo) - a token with access is required", repo)
 			}
 		}
-		files = append(files, f)
+		*files = append(*files, f)
 		return nil
-	})
-	if err != nil {
-		return nil, err
 	}
-	return newRepoTree(repo, rev, files), nil
 }
 
 func (a *hubAPI) headCommit(repo string) (string, error) {
@@ -234,12 +304,13 @@ func (a *hubAPI) headCommit(repo string) (string, error) {
 
 func (a *hubAPI) commits(repo string, limit int) ([]string, error) {
 	var out []string
-	for page := 0; len(out) < limit; page++ {
-		u := fmt.Sprintf("%s/api/models/%s/commits/main?p=%d", getEndpoint(a.endpoint), repo, page)
+	u := fmt.Sprintf("%s/api/models/%s/commits/main?limit=%d", getEndpoint(a.endpoint), repo, min(limit, 100))
+	for u != "" && len(out) < limit {
 		var cs []struct {
 			ID string `json:"id"`
 		}
-		if err := a.getJSON(u, &cs); err != nil {
+		next, err := a.getPaged(u, &cs)
+		if err != nil {
 			return out, err
 		}
 		if len(cs) == 0 {
@@ -248,6 +319,7 @@ func (a *hubAPI) commits(repo string, limit int) ([]string, error) {
 		for _, c := range cs {
 			out = append(out, c.ID)
 		}
+		u = next
 	}
 	if len(out) > limit {
 		out = out[:limit]
@@ -306,6 +378,73 @@ func hashLocal(path string, size int64) (localHash, error) {
 		lh.GitOid = hex.EncodeToString(h1.Sum(nil))
 	}
 	return lh, nil
+}
+
+// hashCache remembers hashes by (dev, inode, size, mtime) so re-runs and the
+// watcher skip re-reading hundreds of GB. Stored as JSON in the cache root.
+type hashCache struct {
+	path  string
+	mu    sync.Mutex
+	m     map[string]localHash
+	dirty bool
+}
+
+func loadHashCache(path string) *hashCache {
+	hc := &hashCache{path: path, m: map[string]localHash{}}
+	if b, err := os.ReadFile(path); err == nil {
+		json.Unmarshal(b, &hc.m)
+	}
+	return hc
+}
+
+func hashKey(path string) (string, bool) {
+	fi, err := os.Stat(path)
+	if err != nil {
+		return "", false
+	}
+	dev, ino := fileDevIno(fi)
+	if ino == 0 {
+		return fmt.Sprintf("%s:%d:%d", path, fi.Size(), fi.ModTime().UnixNano()), true
+	}
+	return fmt.Sprintf("%d:%d:%d:%d", dev, ino, fi.Size(), fi.ModTime().UnixNano()), true
+}
+
+func (hc *hashCache) get(path string) (localHash, bool) {
+	k, ok := hashKey(path)
+	if !ok {
+		return localHash{}, false
+	}
+	hc.mu.Lock()
+	defer hc.mu.Unlock()
+	h, ok := hc.m[k]
+	h.Path = path
+	return h, ok
+}
+
+func (hc *hashCache) put(h localHash) {
+	k, ok := hashKey(h.Path)
+	if !ok {
+		return
+	}
+	st := h
+	st.Path = ""
+	hc.mu.Lock()
+	hc.m[k] = st
+	hc.dirty = true
+	hc.mu.Unlock()
+}
+
+func (hc *hashCache) save() {
+	hc.mu.Lock()
+	defer hc.mu.Unlock()
+	if !hc.dirty {
+		return
+	}
+	b, _ := json.Marshal(hc.m)
+	tmp := hc.path + ".tmp"
+	if os.WriteFile(tmp, b, 0644) == nil {
+		os.Rename(tmp, hc.path)
+	}
 }
 
 // adoptSkipName reports local files that are never model content.
@@ -403,12 +542,21 @@ func (c *HFCache) Adopt(ctx context.Context, opts AdoptOptions) (*AdoptResult, e
 		total += l.size
 	}
 	start := time.Now()
+	hc := loadHashCache(filepath.Join(c.Root, ".adopt-hashes.json"))
+	defer hc.save()
 	for w := 0; w < opts.Jobs; w++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			for i := range next {
-				hashes[i], herrs[i] = hashLocal(locals[i].path, locals[i].size)
+				if h, ok := hc.get(locals[i].path); ok {
+					hashes[i] = h
+				} else {
+					hashes[i], herrs[i] = hashLocal(locals[i].path, locals[i].size)
+					if herrs[i] == nil {
+						hc.put(hashes[i])
+					}
+				}
 				mu.Lock()
 				hashedBytes += locals[i].size
 				opts.logf("hashed %s (%s) [%s/%s]", filepath.Base(locals[i].path), humanBytes(locals[i].size), humanBytes(hashedBytes), humanBytes(total))
@@ -427,6 +575,7 @@ func (c *HFCache) Adopt(ctx context.Context, opts AdoptOptions) (*AdoptResult, e
 	}
 	close(next)
 	wg.Wait()
+	hc.save()
 	if secs := time.Since(start).Seconds(); secs > 0 {
 		opts.logf("hashed %s in %.0fs (%s/s)", humanBytes(total), secs, humanBytes(int64(float64(total)/secs)))
 	}
@@ -463,23 +612,61 @@ func (c *HFCache) Adopt(ctx context.Context, opts AdoptOptions) (*AdoptResult, e
 		}
 		return n
 	}
-	for _, repo := range opts.Repos {
-		head, err := api.headCommit(repo)
-		if err != nil {
-			return nil, fmt.Errorf("%s: %w", repo, err)
+	// HEAD trees of all candidates in parallel; matching stays in repo order
+	// so the first-listed repo wins content that several repos share.
+	headTrees := make([]*repoTree, len(opts.Repos))
+	headErrs := make([]error, len(opts.Repos))
+	{
+		sem := make(chan struct{}, 8)
+		var twg sync.WaitGroup
+		for k, repo := range opts.Repos {
+			twg.Add(1)
+			go func(k int, repo string) {
+				defer twg.Done()
+				sem <- struct{}{}
+				defer func() { <-sem }()
+				head, err := api.headCommit(repo)
+				if err == nil {
+					headTrees[k], err = api.tree(repo, head)
+				}
+				headErrs[k] = err
+			}(k, repo)
 		}
-		res.Head[repo] = head
-		t, err := api.tree(repo, head)
-		if err != nil {
-			return nil, err
+		twg.Wait()
+	}
+	var live []string
+	for k, repo := range opts.Repos {
+		if err := headErrs[k]; err != nil {
+			if len(opts.Repos) == 1 {
+				return nil, fmt.Errorf("%s: %w", repo, err)
+			}
+			opts.logf("%s: skipped (%v)", repo, err)
+			continue
 		}
+		t := headTrees[k]
+		res.Head[repo] = t.Commit
 		trees[repo] = []*repoTree{t}
-		opts.logf("%s@%s: %d files, %d local matches at HEAD", repo, head[:8], len(t.Files), matchAll(t, 0))
+		live = append(live, repo)
+		if n := matchAll(t, 0); n > 0 || len(opts.Repos) <= 4 {
+			opts.logf("%s@%s: %d files, %d local matches at HEAD", repo, t.Commit[:8], len(t.Files), n)
+		}
+	}
+	opts.Repos = live
+	// History: with many candidates, only walk repos that already matched at
+	// HEAD - a stale file almost always comes from a repo still in use.
+	matchedAtHead := map[string]bool{}
+	for i := range hits {
+		for _, h := range hits[i] {
+			matchedAtHead[h.repo] = true
+		}
 	}
 	if opts.HistoryDepth > 0 && unmatched() > 0 {
 		for _, repo := range opts.Repos {
 			if unmatched() == 0 {
 				break
+			}
+			if len(opts.Repos) > 4 && !matchedAtHead[repo] {
+				continue
 			}
 			cs, err := api.commits(repo, opts.HistoryDepth+1)
 			if err != nil {

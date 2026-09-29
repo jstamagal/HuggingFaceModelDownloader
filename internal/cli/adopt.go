@@ -24,6 +24,7 @@ func newAdoptCmd(ro *RootOpts) *cobra.Command {
 		history   int
 		jobs      int
 		endpoint  string
+		reposFile string
 	)
 	cmd := &cobra.Command{
 		Use:   "adopt DIR [FILE...]",
@@ -52,6 +53,17 @@ Examples:
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cache := hfdownloader.NewHFCache(resolveCacheDir(cacheDir), hfdownloader.DefaultStaleTimeout)
+			if reposFile != "" {
+				b, err := os.ReadFile(reposFile)
+				if err != nil {
+					return err
+				}
+				for _, l := range strings.Split(string(b), "\n") {
+					if l = strings.TrimSpace(l); l != "" && !strings.HasPrefix(l, "#") {
+						repos = append(repos, l)
+					}
+				}
+			}
 			if len(repos) == 0 {
 				id, ok := hfdownloader.InferRepoFromPath(args[0])
 				if !ok {
@@ -89,7 +101,7 @@ Examples:
 				LeaveLink: leaveLink, HistoryDepth: history, Jobs: jobs,
 				Token: token, Endpoint: endpoint,
 			}
-			if !ro.Quiet && !ro.JSONOut {
+			if !ro.Quiet {
 				opts.Log = func(f string, a ...any) { fmt.Fprintf(os.Stderr, "  "+f+"\n", a...) }
 			}
 			res, err := cache.Adopt(cmd.Context(), opts)
@@ -148,6 +160,7 @@ Examples:
 	}
 	cmd.Flags().StringVar(&cacheDir, "cache-dir", "", "Hugging Face cache directory (default: config cache-dir, HF_HOME, ~/.cache/huggingface)")
 	cmd.Flags().StringArrayVarP(&repos, "repo", "r", nil, "Candidate repo owner/name (repeatable). Default: inferred from DIR")
+	cmd.Flags().StringVar(&reposFile, "repos-file", "", "File with candidate repo IDs, one per line (# comments ok)")
 	cmd.Flags().StringVar(&mode, "mode", "move", "How to place verified files into blobs/: move, hardlink, copy")
 	cmd.Flags().BoolVarP(&dryRun, "dry-run", "n", false, "Hash and match only; change nothing")
 	cmd.Flags().BoolVar(&noFetch, "no-fetch", false, "Don't download the small non-LFS files of the matched commit")
