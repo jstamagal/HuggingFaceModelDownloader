@@ -85,6 +85,7 @@ func Execute(version string) error {
 	root.AddCommand(newServeCmd(ro))
 	root.AddCommand(newConfigCmd())
 	root.AddCommand(newRebuildCmd(ro))
+	root.AddCommand(newAdoptCmd(ro))
 	root.AddCommand(newListCmd(ro))
 	root.AddCommand(newCacheCmd(ro))
 	root.AddCommand(newInfoCmd(ro))

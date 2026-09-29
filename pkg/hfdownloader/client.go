@@ -31,6 +31,7 @@ type hfNode struct {
 	Type   string     `json:"type"` // "file"|"directory" (sometimes "blob"|"tree")
 	Path   string     `json:"path"`
 	Size   int64      `json:"size,omitempty"`
+	Oid    string     `json:"oid,omitempty"` // git blob sha1 of the file (or of the LFS pointer)
 	LFS    *hfLfsInfo `json:"lfs,omitempty"`
 	Sha256 string     `json:"sha256,omitempty"`
 }
