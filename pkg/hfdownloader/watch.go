@@ -178,7 +178,8 @@ func (c *HFCache) Watch(ctx context.Context, opts WatchOptions) error {
 func ingestCandidate(p string, info os.FileInfo) bool {
 	n := info.Name()
 	if adoptSkipName(n) || strings.HasPrefix(n, ".") || strings.HasPrefix(n, "put_") ||
-		strings.HasSuffix(n, ".tmp") || strings.Contains(n, ".part") || info.Size() == 0 {
+		strings.HasSuffix(n, ".tmp") || strings.Contains(n, ".part") || info.Size() == 0 ||
+		fileLinkCount(info) > 1 { // hardlink of a hub blob (hipfire view)
 		return false
 	}
 	if strings.Contains(filepath.ToSlash(p), "/manifests/") {

@@ -23,7 +23,7 @@ func (v *viewsFlags) bind(cmd *cobra.Command) {
 	cmd.Flags().StringVar(&v.cacheDir, "cache-dir", "", "Hugging Face cache directory (default: config cache-dir, HF_HOME, ~/.cache/huggingface)")
 	cmd.Flags().StringVar(&v.root, "views", "", "Views root (default: <cache-dir>/../views)")
 	cmd.Flags().StringVar(&v.diffusion, "diffusion", "", "ComfyUI models dir to link diffusion files into (default: <cache-dir>/../diffusion if it exists)")
-	cmd.Flags().StringVar(&v.maestro, "maestro", "", "Maestro/Wan2GP flat ckpts dir to ingest and classify for ComfyUI")
+	cmd.Flags().StringVar(&v.maestro, "maestro", "", "Maestro/Wan2GP flat ckpts dir to ingest and classify for ComfyUI (default: <views>/maestro if it exists)")
 }
 
 func (v *viewsFlags) resolve() (*hfdownloader.HFCache, hfdownloader.ViewsOptions) {
@@ -36,6 +36,11 @@ func (v *viewsFlags) resolve() (*hfdownloader.HFCache, hfdownloader.ViewsOptions
 	if opts.DiffusionDir == "" {
 		if fi, err := os.Stat(filepath.Join(parent, "diffusion")); err == nil && fi.IsDir() {
 			opts.DiffusionDir = filepath.Join(parent, "diffusion")
+		}
+	}
+	if opts.MaestroDir == "" {
+		if fi, err := os.Stat(filepath.Join(opts.Root, "maestro")); err == nil && fi.IsDir() {
+			opts.MaestroDir = filepath.Join(opts.Root, "maestro")
 		}
 	}
 	return cache, opts
@@ -52,7 +57,8 @@ No bytes are copied: every entry is a symlink into hub/.../snapshots or blobs.
   <views>/ollama/     point OLLAMA_MODELS here. Every GGUF quant of every repo
                       is "hf.co/<owner>/<repo>:<QUANT>" (mmproj bundled).
   <views>/lmstudio/   point LM Studio's models folder here (<owner>/<repo>/*.gguf)
-  <views>/hipfire/    point HIPFIRE_MODELS_DIR here (hipfire-models/* repos)
+  <views>/hipfire/    point HIPFIRE_MODELS_DIR here (hipfire-models/* repos, hardlinks)
+  <views>/maestro/    Maestro/Wan2GP flat ckpts (symlink app/ckpts here)
   <diffusion>/<cat>/  ComfyUI models dir, fed from the Maestro ckpts view
 
 Only links the builder made are removed on rebuild. Real files you drop into

@@ -188,8 +188,9 @@ func (m *managedSet) finish() (int, error) {
 		if err != nil {
 			continue
 		}
-		// Only remove symlinks and our own small generated files.
-		if fi.Mode()&os.ModeSymlink != 0 || fi.Size() < 1<<20 {
+		// Only remove symlinks, hardlinks into the hub, and our own small
+		// generated files.
+		if fi.Mode()&os.ModeSymlink != 0 || fi.Size() < 1<<20 || fileLinkCount(fi) > 1 {
 			if os.Remove(p) == nil {
 				n++
 				pruneEmptyDirs(filepath.Dir(p), filepath.Dir(m.path))
@@ -230,6 +231,29 @@ func ensureLink(link, target string) (bool, error) {
 		return false, err
 	}
 	return true, os.Symlink(target, link)
+}
+
+// ensureHardlink makes link a hardlink of blob, for apps that skip symlinks
+// (hipfire). A file already there that is not blob is only replaced when it
+// is itself a hub hardlink (link count > 1); a user's real file is left alone.
+func ensureHardlink(link, blob string) (bool, error) {
+	bfi, err := os.Stat(blob)
+	if err != nil {
+		return false, err
+	}
+	if fi, err := os.Lstat(link); err == nil {
+		if os.SameFile(fi, bfi) {
+			return true, nil
+		}
+		if fi.Mode()&os.ModeSymlink == 0 && fileLinkCount(fi) < 2 {
+			return false, nil
+		}
+		os.Remove(link)
+	}
+	if err := os.MkdirAll(filepath.Dir(link), 0755); err != nil {
+		return false, err
+	}
+	return true, os.Link(blob, link)
 }
 
 // BuildViews rebuilds every view from the hub cache.
@@ -470,7 +494,12 @@ func buildLMStudio(files map[string][]HubFile, opts ViewsOptions, rep *ViewsRepo
 			if !strings.HasSuffix(strings.ToLower(f.Path), ".gguf") {
 				continue
 			}
-			link := filepath.Join(root, filepath.FromSlash(repo), filepath.FromSlash(f.Path))
+			if meta, err := ReadGGUFMeta(f.Blob); err == nil && diffusionArch[meta.Architecture] {
+				continue // ComfyUI/Maestro material; LM Studio would list it as an LLM
+			}
+			// LM Studio indexes exactly <owner>/<repo>/<file>; flatten subdirs
+			// (quant folders, split_files/...) so every file is found.
+			link := filepath.Join(root, filepath.FromSlash(repo), filepath.Base(f.Path))
 			ok, err := ensureLink(link, f.Snapshot)
 			if err != nil {
 				return err
@@ -503,8 +532,9 @@ func buildHipfire(files map[string][]HubFile, opts ViewsOptions, rep *ViewsRepor
 			if b == "readme.md" || b == ".gitattributes" || strings.HasSuffix(b, ".json") {
 				continue
 			}
+			// hipfire lists regular files only; a hardlink costs no space.
 			link := filepath.Join(root, filepath.Base(f.Path))
-			ok, err := ensureLink(link, f.Snapshot)
+			ok, err := ensureHardlink(link, f.Blob)
 			if err != nil {
 				return err
 			}
