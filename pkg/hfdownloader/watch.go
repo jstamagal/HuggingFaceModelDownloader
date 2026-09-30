@@ -78,7 +78,26 @@ func (c *HFCache) Watch(ctx context.Context, opts WatchOptions) error {
 		os.MkdirAll(r, 0755)
 		addTree(r)
 	}
-	w.Add(c.HubDir())
+	// Watch the real hub path (the cache dir may be a symlink) down to the
+	// snapshot dirs: a finished download shows up as a new snapshot link or
+	// refs/main write. blobs/ is skipped - .incomplete churn is not a change.
+	hub := c.HubDir()
+	if r, err := filepath.EvalSymlinks(hub); err == nil {
+		hub = r
+	}
+	addHub := func(dir string) {
+		filepath.Walk(dir, func(p string, info os.FileInfo, err error) error {
+			if err != nil || !info.IsDir() {
+				return nil
+			}
+			if info.Name() == "blobs" || info.Name() == ".locks" {
+				return filepath.SkipDir
+			}
+			w.Add(p)
+			return nil
+		})
+	}
+	addHub(hub)
 
 	rebuild := func(why string) {
 		rep, err := c.BuildViews(opts.Views)
@@ -110,6 +129,7 @@ func (c *HFCache) Watch(ctx context.Context, opts WatchOptions) error {
 	full := time.NewTicker(opts.Rebuild)
 	defer full.Stop()
 	hubDirty := false
+	var hubLast time.Time
 	for {
 		select {
 		case <-ctx.Done():
@@ -117,8 +137,13 @@ func (c *HFCache) Watch(ctx context.Context, opts WatchOptions) error {
 		case err := <-w.Errors:
 			opts.logf("watch error: %v", err)
 		case ev := <-w.Events:
-			if filepath.Dir(ev.Name) == c.HubDir() {
-				hubDirty = true
+			if strings.HasPrefix(ev.Name, hub+string(filepath.Separator)) {
+				if ev.Op&fsnotify.Create != 0 {
+					if fi, err := os.Lstat(ev.Name); err == nil && fi.IsDir() {
+						addHub(ev.Name)
+					}
+				}
+				hubDirty, hubLast = true, time.Now()
 				continue
 			}
 			info, err := os.Lstat(ev.Name)
@@ -145,7 +170,7 @@ func (c *HFCache) Watch(ctx context.Context, opts WatchOptions) error {
 		case <-full.C:
 			rebuild("periodic")
 		case <-tick.C:
-			if hubDirty {
+			if hubDirty && time.Since(hubLast) >= 3*time.Second {
 				hubDirty = false
 				rebuild("hub changed")
 			}
