@@ -816,7 +816,7 @@ func (c *HFCache) Adopt(ctx context.Context, opts AdoptOptions) (*AdoptResult, e
 				if err := rd.EnsureDirs(); err != nil {
 					return nil, err
 				}
-				tmp := rd.IncompletePath("adopt-" + strconv.Itoa(os.Getpid()) + "-" + hex.EncodeToString([]byte(rf.Path))[:16])
+				tmp := rd.IncompletePath("adopt-" + strconv.Itoa(os.Getpid()) + "-" + strconv.Itoa(len(rr.Fetched)))
 				if err := api.fetchRaw(repo, chosen, rf.Path, tmp); err != nil {
 					os.Remove(tmp)
 					opts.logf("%s: fetch %s: %v", repo, rf.Path, err)

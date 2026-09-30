@@ -5,7 +5,9 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -25,6 +27,7 @@ func newAdoptCmd(ro *RootOpts) *cobra.Command {
 		jobs      int
 		endpoint  string
 		reposFile string
+		search    bool
 	)
 	cmd := &cobra.Command{
 		Use:   "adopt DIR [FILE...]",
@@ -64,15 +67,18 @@ Examples:
 					}
 				}
 			}
+			token := resolveHubToken(ro, cache.Root)
+			endpoint = resolveHubEndpoint(endpoint)
+			if search {
+				repos = append(repos, searchCandidates(cmd, args, token, endpoint)...)
+			}
 			if len(repos) == 0 {
 				id, ok := hfdownloader.InferRepoFromPath(args[0])
 				if !ok {
-					return fmt.Errorf("cannot infer owner/repo from %q; pass --repo", args[0])
+					return fmt.Errorf("cannot infer owner/repo from %q; pass --repo or --search", args[0])
 				}
 				repos = []string{id}
 			}
-			token := resolveHubToken(ro, cache.Root)
-			endpoint = resolveHubEndpoint(endpoint)
 			opts := hfdownloader.AdoptOptions{
 				Repos: repos, Dir: args[0], Files: args[1:],
 				Mode: hfdownloader.AdoptMode(mode), DryRun: dryRun, NoFetch: noFetch,
@@ -146,7 +152,49 @@ Examples:
 	cmd.Flags().IntVar(&history, "history", 50, "Commits of history to search for files not in HEAD (0 = HEAD only)")
 	cmd.Flags().IntVarP(&jobs, "jobs", "j", 4, "Parallel hashers")
 	cmd.Flags().StringVar(&endpoint, "endpoint", "", "Hub endpoint (default https://huggingface.co)")
+	cmd.Flags().BoolVarP(&search, "search", "s", false, "Find candidate repos by Hub search on the dir and weight file names (adds to --repo)")
 	return cmd
+}
+
+// searchCandidates runs Hub search on DIR's name, owner/name path guess and
+// every weight file's name. Wrong candidates cost only API calls: adoption
+// still matches by content.
+func searchCandidates(cmd *cobra.Command, args []string, token, endpoint string) []string {
+	var names []string
+	if id, ok := hfdownloader.InferRepoFromPath(args[0]); ok {
+		names = append(names, filepath.Base(id))
+	}
+	files := args[1:]
+	if len(files) == 0 {
+		filepath.WalkDir(args[0], func(p string, d fs.DirEntry, err error) error {
+			if err == nil && d.Type().IsRegular() {
+				files = append(files, p)
+			}
+			return nil
+		})
+	}
+	for _, f := range files {
+		switch strings.ToLower(filepath.Ext(f)) {
+		case ".gguf", ".safetensors", ".sft", ".bin", ".pt", ".pth", ".ckpt", ".onnx", ".mq4":
+			names = append(names, filepath.Base(f))
+		}
+	}
+	seen := map[string]bool{}
+	var out []string
+	for _, n := range names {
+		ids, err := hfdownloader.GuessRepos(cmd.Context(), n, token, endpoint)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "  search %s: %v\n", n, err)
+		}
+		for _, id := range ids {
+			if !seen[id] {
+				seen[id] = true
+				out = append(out, id)
+			}
+		}
+	}
+	fmt.Fprintf(os.Stderr, "  search: %d candidate repos from %d names\n", len(out), len(names))
+	return out
 }
 
 // resolveHubToken: --token > HF_TOKEN > config token > <cache>/token.
