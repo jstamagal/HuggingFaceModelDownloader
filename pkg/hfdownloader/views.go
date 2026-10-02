@@ -304,29 +304,35 @@ type ollamaManifest struct {
 	Layers        []ollamaLayer `json:"layers"`
 }
 
-func (c *HFCache) buildOllama(files map[string][]HubFile, opts ViewsOptions, rep *ViewsReport) error {
-	root := filepath.Join(opts.Root, "ollama")
-	blobs := filepath.Join(root, "blobs")
-	if err := os.MkdirAll(blobs, 0775); err != nil {
-		return err
-	}
-	os.MkdirAll(filepath.Join(root, "manifests"), 0775)
-	ms := loadManaged(root)
+// ollamaPlanned is one generated Ollama model: manifest + config blob, with
+// layers pointing at existing files (hub blobs or local files).
+type ollamaPlanned struct {
+	Repo, Tag    string
+	Layers       []HubFile // model shards, then projector
+	Manifest     []byte
+	Config       []byte
+	ConfigDigest string // hex sha256 of Config
+}
 
+// planOllama groups every repo's GGUFs into Ollama models (one per quant,
+// shards joined, mmproj bundled). Diffusion-arch GGUFs are dropped.
+func planOllama(files map[string][]HubFile, skipped *[]string) []ollamaPlanned {
 	repos := make([]string, 0, len(files))
 	for r := range files {
 		repos = append(repos, r)
 	}
 	sort.Strings(repos)
+	var out []ollamaPlanned
 	for _, repo := range repos {
 		type group struct {
 			quant  string
 			shards []HubFile
 		}
-		groups := map[string]*group{} // logical name -> group
+		groups := map[string]*group{}
 		var projs []HubFile
 		for _, f := range files[repo] {
-			if !strings.HasSuffix(strings.ToLower(f.Path), ".gguf") || len(f.SHA) != 64 {
+			lp := strings.ToLower(f.Path)
+			if !strings.HasSuffix(lp, ".gguf") || len(f.SHA) != 64 || strings.Contains(lp, "imatrix") {
 				continue
 			}
 			if isMMProj(f.Path) {
@@ -347,7 +353,6 @@ func (c *HFCache) buildOllama(files map[string][]HubFile, opts ViewsOptions, rep
 		if len(groups) == 0 {
 			continue
 		}
-		// Prefer an F16 projector, else the first one.
 		var proj *HubFile
 		sort.Slice(projs, func(i, j int) bool { return projs[i].Path < projs[j].Path })
 		for i := range projs {
@@ -355,7 +360,6 @@ func (c *HFCache) buildOllama(files map[string][]HubFile, opts ViewsOptions, rep
 				proj = &projs[i]
 			}
 		}
-		// Assign tags: quant label, disambiguated by file stem on collision.
 		logicals := make([]string, 0, len(groups))
 		for l := range groups {
 			logicals = append(logicals, l)
@@ -377,62 +381,54 @@ func (c *HFCache) buildOllama(files map[string][]HubFile, opts ViewsOptions, rep
 				tag = tag[:120]
 			}
 			if len(g.shards) > 1 {
-				// Every shard must be present or llama.cpp refuses to load.
 				if m := shardRe.FindStringSubmatch(g.shards[0].Path); m == nil || fmt.Sprintf("%05d", len(g.shards)) != m[2] {
-					rep.Skipped = append(rep.Skipped, fmt.Sprintf("ollama: %s %s incomplete shard set (%d present)", repo, tag, len(g.shards)))
+					if skipped != nil {
+						*skipped = append(*skipped, fmt.Sprintf("ollama: %s %s incomplete shard set (%d present)", repo, tag, len(g.shards)))
+					}
 					continue
 				}
 			}
-			if err := c.writeOllamaModel(root, repo, tag, g.quant, g.shards, proj, ms); err == errNotLLM {
+			m, err := ollamaModel(repo, tag, g.quant, g.shards, proj)
+			if err == errNotLLM {
 				continue
 			} else if err != nil {
-				rep.Skipped = append(rep.Skipped, fmt.Sprintf("ollama: %s:%s: %v", repo, tag, err))
+				if skipped != nil {
+					*skipped = append(*skipped, fmt.Sprintf("ollama: %s:%s: %v", repo, tag, err))
+				}
 				continue
 			}
-			rep.OllamaModels++
+			out = append(out, m)
 		}
 	}
-	n, err := ms.finish()
-	rep.Removed += n
-	return err
+	return out
 }
 
-func (c *HFCache) writeOllamaModel(root, repo, tag, quant string, shards []HubFile, proj *HubFile, ms *managedSet) error {
-	blobs := filepath.Join(root, "blobs")
+func ollamaModel(repo, tag, quant string, shards []HubFile, proj *HubFile) (ollamaPlanned, error) {
 	var layers []ollamaLayer
 	var diffIDs []string
 	var params uint64
 	arch := ""
+	pl := ollamaPlanned{Repo: repo, Tag: tag}
 	for i, s := range shards {
 		meta, err := ReadGGUFMeta(s.Blob)
 		if err != nil {
-			return err
+			return pl, err
 		}
 		params += meta.Params
 		if i == 0 {
 			arch = meta.Architecture
 			if diffusionArch[arch] {
-				return errNotLLM
+				return pl, errNotLLM
 			}
-		}
-		link := filepath.Join(blobs, "sha256-"+s.SHA)
-		if ok, err := ensureLink(link, s.Blob); err != nil {
-			return err
-		} else if ok {
-			ms.now[link] = true
 		}
 		layers = append(layers, ollamaLayer{"application/vnd.ollama.image.model", "sha256:" + s.SHA, s.Size})
 		diffIDs = append(diffIDs, "sha256:"+s.SHA)
+		pl.Layers = append(pl.Layers, s)
 	}
 	if proj != nil {
-		link := filepath.Join(blobs, "sha256-"+proj.SHA)
-		if ok, err := ensureLink(link, proj.Blob); err != nil {
-			return err
-		} else if ok {
-			ms.now[link] = true
-		}
 		layers = append(layers, ollamaLayer{"application/vnd.ollama.image.projector", "sha256:" + proj.SHA, proj.Size})
 		diffIDs = append(diffIDs, "sha256:"+proj.SHA)
+		pl.Layers = append(pl.Layers, *proj)
 	}
 	if quant == "" {
 		quant = "unknown"
@@ -447,33 +443,65 @@ func (c *HFCache) writeOllamaModel(root, repo, tag, quant string, shards []HubFi
 		"os":             "linux",
 		"rootfs":         map[string]any{"type": "layers", "diff_ids": diffIDs},
 	}
-	cb, _ := json.Marshal(cfg)
-	sum := sha256.Sum256(cb)
-	cd := hex.EncodeToString(sum[:])
-	cpath := filepath.Join(blobs, "sha256-"+cd)
+	pl.Config, _ = json.Marshal(cfg)
+	sum := sha256.Sum256(pl.Config)
+	pl.ConfigDigest = hex.EncodeToString(sum[:])
+	man := ollamaManifest{
+		SchemaVersion: 2,
+		MediaType:     "application/vnd.docker.distribution.manifest.v2+json",
+		Config:        ollamaLayer{"application/vnd.docker.container.image.v1+json", "sha256:" + pl.ConfigDigest, int64(len(pl.Config))},
+		Layers:        layers,
+	}
+	pl.Manifest, _ = json.Marshal(man)
+	return pl, nil
+}
+
+func (c *HFCache) buildOllama(files map[string][]HubFile, opts ViewsOptions, rep *ViewsReport) error {
+	root := filepath.Join(opts.Root, "ollama")
+	blobs := filepath.Join(root, "blobs")
+	if err := os.MkdirAll(blobs, 0775); err != nil {
+		return err
+	}
+	os.MkdirAll(filepath.Join(root, "manifests"), 0775)
+	ms := loadManaged(root)
+	for _, m := range planOllama(files, &rep.Skipped) {
+		if err := writeOllamaModel(root, m, ms); err != nil {
+			rep.Skipped = append(rep.Skipped, fmt.Sprintf("ollama: %s:%s: %v", m.Repo, m.Tag, err))
+			continue
+		}
+		rep.OllamaModels++
+	}
+	n, err := ms.finish()
+	rep.Removed += n
+	return err
+}
+
+func writeOllamaModel(root string, m ollamaPlanned, ms *managedSet) error {
+	blobs := filepath.Join(root, "blobs")
+	for _, s := range m.Layers {
+		link := filepath.Join(blobs, "sha256-"+s.SHA)
+		if ok, err := ensureLink(link, s.Blob); err != nil {
+			return err
+		} else if ok {
+			ms.now[link] = true
+		}
+	}
+	cpath := filepath.Join(blobs, "sha256-"+m.ConfigDigest)
 	if _, err := os.Stat(cpath); err != nil {
-		if err := os.WriteFile(cpath, cb, 0644); err != nil {
+		if err := os.WriteFile(cpath, m.Config, 0644); err != nil {
 			return err
 		}
 	}
 	ms.now[cpath] = true
-	man := ollamaManifest{
-		SchemaVersion: 2,
-		MediaType:     "application/vnd.docker.distribution.manifest.v2+json",
-		Config:        ollamaLayer{"application/vnd.docker.container.image.v1+json", "sha256:" + cd, int64(len(cb))},
-		Layers:        layers,
-	}
-	mb, _ := json.Marshal(man)
-	mpath := filepath.Join(root, "manifests", "hf.co", filepath.FromSlash(repo), tag)
+	mpath := filepath.Join(root, "manifests", "hf.co", filepath.FromSlash(m.Repo), m.Tag)
 	if fi, err := os.Lstat(mpath); err == nil && !ms.old[mpath] && fi.Mode().IsRegular() {
-		// A real `ollama pull` manifest: leave it alone.
-		return nil
+		return nil // a real `ollama pull` manifest: leave it alone
 	}
-	if cur, err := os.ReadFile(mpath); err != nil || string(cur) != string(mb) {
+	if cur, err := os.ReadFile(mpath); err != nil || string(cur) != string(m.Manifest) {
 		if err := os.MkdirAll(filepath.Dir(mpath), 0775); err != nil {
 			return err
 		}
-		if err := os.WriteFile(mpath, mb, 0664); err != nil {
+		if err := os.WriteFile(mpath, m.Manifest, 0664); err != nil {
 			return err
 		}
 	}
