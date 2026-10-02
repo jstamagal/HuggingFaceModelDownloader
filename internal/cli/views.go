@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -138,5 +140,77 @@ Nothing is moved unless the Hub vouches for the exact bytes. Unmatched files
 	cmd.Flags().StringVar(&endpoint, "endpoint", "", "Hub endpoint")
 	cmd.Flags().DurationVar(&settle, "settle", 10*time.Second, "A new file must be unchanged this long before it is ingested")
 	cmd.Flags().DurationVar(&every, "rebuild-every", 5*time.Minute, "Periodic full views rebuild")
+	return cmd
+}
+
+func newMountCmd(ro *RootOpts) *cobra.Command {
+	var vf viewsFlags
+	var upper, reposFile, endpoint string
+	var allowOther, debug bool
+	var settle time.Duration
+	cmd := &cobra.Command{
+		Use:   "mount MOUNTPOINT",
+		Short: "FUSE mount showing every app its own layout of the model stores",
+		Long: `Mount serves one filesystem with a directory per app, computed live from
+the hub (<cache-dir>/hub), your own files (<cache-dir>/local/<owner>/<repo>/)
+and the ComfyUI store (--diffusion):
+
+  ollama/     OLLAMA_MODELS. hf.co/<o>/<r>:<QUANT> and local/<o>/<r>:<QUANT>
+  lmstudio/   LM Studio models folder (<owner>/<repo>/*.gguf)
+  hipfire/    HIPFIRE_MODELS_DIR (hipfire-models/* repos)
+  maestro/    Maestro/Wan2GP ckpts (writable layer)
+  inbox/      drop anything here; the Hub is searched for it
+
+Files written into a view (a download, an mv, ollama pull) land in the upper
+dir and, once closed and settled, are verified against the Hub and moved into
+the right store. Finished diffusion downloads in the hub are moved into the
+ComfyUI store. Unmatched files stay in the upper dir and stay visible.`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cache, vopts := vf.resolve()
+			if upper == "" {
+				upper = filepath.Join(filepath.Dir(vopts.Root), ".upper")
+			}
+			logf := func(f string, a ...any) {
+				fmt.Fprintf(os.Stderr, "%s "+f+"\n", append([]any{time.Now().Format("15:04:05")}, a...)...)
+			}
+			opts := hfdownloader.MountOptions{
+				MountPoint: args[0], UpperDir: upper, DiffusionDir: vopts.DiffusionDir,
+				AllowOther: allowOther, Debug: debug,
+				Watch: hfdownloader.WatchOptions{
+					Settle: settle, Token: resolveHubToken(ro, cache.Root),
+					Endpoint: resolveHubEndpoint(endpoint), Log: logf,
+				},
+			}
+			if reposFile == "" {
+				if h, err := os.UserConfigDir(); err == nil {
+					if _, err := os.Stat(filepath.Join(h, "hfdownloader", "maestro_repos.txt")); err == nil {
+						reposFile = filepath.Join(h, "hfdownloader", "maestro_repos.txt")
+					}
+				}
+			}
+			if reposFile != "" {
+				b, err := os.ReadFile(reposFile)
+				if err != nil {
+					return err
+				}
+				for _, l := range strings.Split(string(b), "\n") {
+					if l = strings.TrimSpace(l); l != "" && !strings.HasPrefix(l, "#") {
+						opts.Watch.MaestroRepos = append(opts.Watch.MaestroRepos, l)
+					}
+				}
+			}
+			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
+			defer stop()
+			return cache.Mount(ctx, opts)
+		},
+	}
+	vf.bind(cmd)
+	cmd.Flags().StringVar(&upper, "upper", "", "Writable layer (default: <cache-dir>/../.upper)")
+	cmd.Flags().BoolVar(&allowOther, "allow-other", false, "Let other users (system ollama) use the mount; needs user_allow_other in /etc/fuse.conf")
+	cmd.Flags().BoolVar(&debug, "debug", false, "Log every FUSE request")
+	cmd.Flags().StringVar(&reposFile, "maestro-repos", "", "Candidate repo list for files Maestro downloads (default: ~/.config/hfdownloader/maestro_repos.txt)")
+	cmd.Flags().StringVar(&endpoint, "endpoint", "", "Hub endpoint")
+	cmd.Flags().DurationVar(&settle, "settle", 10*time.Second, "A written file must be closed and unchanged this long before ingest")
 	return cmd
 }
