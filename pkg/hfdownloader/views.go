@@ -263,10 +263,20 @@ func (c *HFCache) BuildViews(opts ViewsOptions) (*ViewsReport, error) {
 		return nil, err
 	}
 	rep := &ViewsReport{}
-	if err := c.buildOllama(files, opts, rep); err != nil {
+	local := c.localViewFiles()
+	if err := c.buildOllama(files, local, opts, rep); err != nil {
 		return rep, fmt.Errorf("ollama view: %w", err)
 	}
-	if err := buildLMStudio(files, opts, rep); err != nil {
+	both := make(map[string][]HubFile, len(files)+len(local))
+	for k, v := range files {
+		both[k] = v
+	}
+	for k, v := range local {
+		// same owner/repo can exist in both stores (HF safetensors in hub,
+		// your own quants in local/): show both sets of files.
+		both[k] = append(append([]HubFile(nil), both[k]...), v...)
+	}
+	if err := buildLMStudio(both, opts, rep); err != nil {
 		return rep, fmt.Errorf("lmstudio view: %w", err)
 	}
 	if err := buildHipfire(files, opts, rep); err != nil {
@@ -456,7 +466,7 @@ func ollamaModel(repo, tag, quant string, shards []HubFile, proj *HubFile) (olla
 	return pl, nil
 }
 
-func (c *HFCache) buildOllama(files map[string][]HubFile, opts ViewsOptions, rep *ViewsReport) error {
+func (c *HFCache) buildOllama(files, local map[string][]HubFile, opts ViewsOptions, rep *ViewsReport) error {
 	root := filepath.Join(opts.Root, "ollama")
 	blobs := filepath.Join(root, "blobs")
 	if err := os.MkdirAll(blobs, 0775); err != nil {
@@ -464,8 +474,20 @@ func (c *HFCache) buildOllama(files map[string][]HubFile, opts ViewsOptions, rep
 	}
 	os.MkdirAll(filepath.Join(root, "manifests"), 0775)
 	ms := loadManaged(root)
+	type hostPlan struct {
+		host string
+		m    ollamaPlanned
+	}
+	var plans []hostPlan
 	for _, m := range planOllama(files, &rep.Skipped) {
-		if err := writeOllamaModel(root, m, ms); err != nil {
+		plans = append(plans, hostPlan{"hf.co", m})
+	}
+	for _, m := range planOllama(local, &rep.Skipped) {
+		plans = append(plans, hostPlan{"local", m})
+	}
+	for _, hp := range plans {
+		m := hp.m
+		if err := writeOllamaModel(root, hp.host, m, ms); err != nil {
 			rep.Skipped = append(rep.Skipped, fmt.Sprintf("ollama: %s:%s: %v", m.Repo, m.Tag, err))
 			continue
 		}
@@ -476,7 +498,7 @@ func (c *HFCache) buildOllama(files map[string][]HubFile, opts ViewsOptions, rep
 	return err
 }
 
-func writeOllamaModel(root string, m ollamaPlanned, ms *managedSet) error {
+func writeOllamaModel(root, host string, m ollamaPlanned, ms *managedSet) error {
 	blobs := filepath.Join(root, "blobs")
 	for _, s := range m.Layers {
 		link := filepath.Join(blobs, "sha256-"+s.SHA)
@@ -493,7 +515,7 @@ func writeOllamaModel(root string, m ollamaPlanned, ms *managedSet) error {
 		}
 	}
 	ms.now[cpath] = true
-	mpath := filepath.Join(root, "manifests", "hf.co", filepath.FromSlash(m.Repo), m.Tag)
+	mpath := filepath.Join(root, "manifests", host, filepath.FromSlash(m.Repo), m.Tag)
 	if fi, err := os.Lstat(mpath); err == nil && !ms.old[mpath] && fi.Mode().IsRegular() {
 		return nil // a real `ollama pull` manifest: leave it alone
 	}
@@ -678,4 +700,26 @@ func syncComfyFromMaestro(opts ViewsOptions, rep *ViewsReport) error {
 	n, err := ms.finish()
 	rep.Removed += n
 	return err
+}
+
+// localViewFiles lists <cache>/local/<owner>/<repo>/** (your own quants) with
+// sha256 from the adopt hash cache; unhashed GGUFs are hashed once and cached.
+func (c *HFCache) localViewFiles() map[string][]HubFile {
+	hc := loadHashCache(filepath.Join(c.Root, ".adopt-hashes.json"))
+	defer hc.save()
+	return localFiles(c.Root, func(p string) string {
+		if h, ok := hc.get(p); ok && h.SHA256 != "" {
+			return h.SHA256
+		}
+		fi, err := os.Stat(p)
+		if err != nil {
+			return ""
+		}
+		h, err := hashLocal(p, fi.Size())
+		if err != nil {
+			return ""
+		}
+		hc.put(h)
+		return h.SHA256
+	})
 }
