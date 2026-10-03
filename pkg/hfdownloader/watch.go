@@ -244,7 +244,10 @@ func (c *HFCache) ingest(ctx context.Context, p string, opts WatchOptions) bool 
 	switch {
 	case func() bool { _, ok := under(manRoot); return ok }():
 		return c.ingestOllamaManifest(ctx, p, opts)
-	case func() bool { rel, ok := under(lmRoot); return ok && strings.Count(rel, string(filepath.Separator)) >= 2 }():
+	case func() bool {
+		rel, ok := under(lmRoot)
+		return ok && strings.Count(rel, string(filepath.Separator)) >= 2
+	}():
 		rel, _ := under(lmRoot)
 		parts := strings.SplitN(filepath.ToSlash(rel), "/", 3)
 		repos = []string{parts[0] + "/" + parts[1]}

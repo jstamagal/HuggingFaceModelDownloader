@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
+//go:build linux
+
 package hfdownloader
 
 // `hfdownloader mount`: one FUSE mount that shows every app its own layout of
